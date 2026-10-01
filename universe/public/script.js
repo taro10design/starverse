@@ -133,6 +133,7 @@ help.innerHTML = `
   <p class="dim">⌫ 消：誰の星でも消せる。もう一度押すと自分のが全部消える</p>
   <p class="dim">👻 幽霊：消えた自分の星をなぞって忘れる。もう一度押すと全部忘れる</p>
   <p class="dim">消えた自分の星は幽霊として残る。光モードでタップすると復活</p>
+  <p class="dim"><button id="revivebtn">幽霊を全部復活</button></p>
   <p>近くの星どうし — 線がつながって星座に</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>ピンチ / ホイール — ズーム</p>
@@ -141,6 +142,7 @@ help.innerHTML = `
   <p>右下 — ひとりの宇宙と切り替え</p>
   <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。混んだ場所の星は早く消え、見てもらった星は長生きする"}</p>
   <p class="dim"><button id="keybtn">鍵リンクをコピー</button> 別の端末・ブラウザでも自分の星として開ける</p>
+
 `;
 helpBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
@@ -165,6 +167,19 @@ keyBtn.addEventListener("pointerdown", (e) => {
   } else {
     prompt("このリンクを保存してね", url);
   }
+});
+
+const reviveBtn = help.querySelector("#revivebtn");
+reviveBtn.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  let n = 0;
+  for (const g of [...ghosts.values()]) {
+    revive(g, true);
+    n++;
+  }
+  if (n) haptic();
+  reviveBtn.textContent = n ? `${n}個復活した` : "幽霊がいない";
+  setTimeout(() => (reviveBtn.textContent = "幽霊を全部復活"), 1500);
 });
 if (!localStorage.getItem("uchu-seen")) {
   help.classList.add("open");
@@ -607,12 +622,14 @@ function ghostAt(sx, sy, hit = 20) {
   }
   return best;
 }
-function revive(g) {
+function revive(g, quiet) {
   ghosts.delete(g.id);
   ghostsSave();
   placeStar(g.x, g.y, g);
-  ping();
-  haptic();
+  if (!quiet) {
+    ping();
+    haptic();
+  }
 }
 function deleteStar(s) {
   if (s.by === MY_UID) {
