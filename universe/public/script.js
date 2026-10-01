@@ -444,7 +444,7 @@ function drawFixedStar(s, wx, wy, t) {
 // ミニマップ：世界全体を俯瞰。星・他人・自分・今見ている範囲を描く
 function drawMap() {
   let x0 = 0, y0 = 0, x1 = 1, y1 = 1;
-  const corners = [s2w(0, 0), s2w(W, 0), s2w(0, H), s2w(W, H)];
+  const corners = [s2w(0, 0), s2w(W, 0), s2w(W, H), s2w(0, H)];
   for (const s of fixed.values()) {
     if (s.x < x0) x0 = s.x; if (s.x > x1) x1 = s.x;
     if (s.y < y0) y0 = s.y; if (s.y > y1) y1 = s.y;
@@ -476,11 +476,14 @@ function drawMap() {
     mctx.fillRect(x - 0.75, y - 0.75, 1.5, 1.5);
   }
   // 他の光
-  mctx.fillStyle = PEER_COLOR.core;
   for (const p of peers.values()) {
     const [x, y] = M(p.rx, p.ry);
+    const pc = typeof p.c === "number" ? PALETTES[p.c % PALETTES.length] : PEER_COLOR;
     mctx.globalAlpha = 0.9;
-    mctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    mctx.fillStyle = pc.core;
+    mctx.beginPath();
+    mctx.arc(x, y, 2, 0, Math.PI * 2);
+    mctx.fill();
   }
   // 今見ている範囲
   mctx.globalAlpha = 1;
