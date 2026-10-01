@@ -13,6 +13,38 @@ let stars = [];
 let pulses = [];
 let t0 = 0;
 
+// --- 光の色パレット（自分の色を選べる） ---
+const PALETTES = [
+  { core: "#fff8ec", glow: [255, 190, 120] }, // あかり
+  { core: "#ffe2da", glow: [255, 110, 90] },  // 朱
+  { core: "#e2f6ff", glow: [110, 200, 255] }, // 水
+  { core: "#e8ffe9", glow: [110, 230, 160] }, // 若葉
+  { core: "#f4e8ff", glow: [190, 140, 255] }, // 藤
+  { core: "#fff4c8", glow: [255, 205, 90] },  // 金
+];
+const PEER_COLOR = { core: "#dfe9ff", glow: [160, 190, 255] }; // 無色の他人用
+let myColor = Math.min(+(localStorage.getItem("uchu-color") || 0), PALETTES.length - 1);
+
+const paletteEl = document.createElement("div");
+paletteEl.id = "palette";
+PALETTES.forEach((p, i) => {
+  const b = document.createElement("button");
+  b.className = "swatch" + (i === myColor ? " sel" : "");
+  b.style.setProperty("--c", p.core);
+  b.style.setProperty("--g", `rgba(${p.glow.join(",")},0.6)`);
+  b.setAttribute("aria-label", "color " + i);
+  b.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    myColor = i;
+    localStorage.setItem("uchu-color", String(i));
+    paletteEl.querySelectorAll(".swatch").forEach((el, j) => el.classList.toggle("sel", j === i));
+    pulses.push({ x: player.x, y: player.y, r: 0, life: 1 });
+    sendPos();
+  });
+  paletteEl.appendChild(b);
+});
+document.body.appendChild(paletteEl);
+
 function resize() {
   W = innerWidth;
   H = innerHeight;
@@ -47,7 +79,7 @@ for (let i = 0; i < STAR_N; i++) {
 }
 
 // --- 他の光たち（本物の人間） ---
-const peers = new Map(); // id -> {x,y,rx,ry} 正規化座標
+const peers = new Map(); // id -> {x,y,rx,ry,c} 正規化座標
 let ws = null;
 let myId = null;
 let retry = 1500;
@@ -70,11 +102,12 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.t === "welcome") {
       myId = m.id;
-      for (const d of m.dots) peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y });
+      for (const d of m.dots) peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y, c: d.c });
     } else if (m.t === "p") {
-      const p = peers.get(m.id) || { x: m.x, y: m.y, rx: m.x, ry: m.y };
+      const p = peers.get(m.id) || { x: m.x, y: m.y, rx: m.x, ry: m.y, c: m.c };
       p.x = m.x;
       p.y = m.y;
+      if (typeof m.c === "number") p.c = m.c;
       peers.set(m.id, p);
     } else if (m.t === "pulse") {
       pulses.push({ x: m.x * W, y: m.y * H, r: 0, life: 0.8 });
@@ -95,7 +128,7 @@ function send(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
 function sendPos() {
-  send({ t: "p", x: player.x / W, y: player.y / H });
+  send({ t: "p", x: player.x / W, y: player.y / H, c: myColor });
 }
 
 // ポインタが来るまでは自分で漂う
@@ -155,6 +188,14 @@ function ping() {
   } catch {}
 }
 
+function glowGradient(x, y, radius, p, midAlpha) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  g.addColorStop(0, p.core);
+  g.addColorStop(0.3, `rgba(${p.glow.join(",")},${midAlpha})`);
+  g.addColorStop(1, `rgba(${p.glow.join(",")},0)`);
+  return g;
+}
+
 function frame(t) {
   requestAnimationFrame(frame);
   const dt = Math.min((t - t0) / 16.7, 3) || 1;
@@ -178,18 +219,19 @@ function frame(t) {
   }
 
   // --- 軌跡レイヤー（残像） ---
+  const pal = PALETTES[myColor];
   tctx.fillStyle = "rgba(4, 6, 18, 0.09)";
   tctx.fillRect(0, 0, W, H);
   const speed = Math.hypot(player.vx, player.vy);
   if (speed > 0.3) {
-    tctx.strokeStyle = "rgba(255, 214, 170, 0.55)";
+    tctx.strokeStyle = `rgba(${pal.glow.join(",")},0.55)`;
     tctx.lineWidth = 4.5;
     tctx.lineCap = "round";
     tctx.beginPath();
     tctx.moveTo(player.px, player.py);
     tctx.lineTo(player.x, player.y);
     tctx.stroke();
-    tctx.strokeStyle = "rgba(255, 245, 230, 0.9)";
+    tctx.strokeStyle = pal.core;
     tctx.lineWidth = 1.2;
     tctx.beginPath();
     tctx.moveTo(player.px, player.py);
@@ -261,21 +303,20 @@ function frame(t) {
   }
   ctx.globalAlpha = 1;
 
-  // --- 他の光（実在の誰か） ---
+  // --- 他の光（実在の誰か、色つき） ---
   for (const p of peers.values()) {
     p.rx += (p.x - p.rx) * Math.min(1, 0.12 * dt);
     p.ry += (p.y - p.ry) * Math.min(1, 0.12 * dt);
     const px = p.rx * W;
     const py = p.ry * H;
-    const g = ctx.createRadialGradient(px, py, 0, px, py, 18);
-    g.addColorStop(0, "rgba(210, 228, 255, 0.8)");
-    g.addColorStop(0.3, "rgba(160, 190, 255, 0.25)");
-    g.addColorStop(1, "rgba(140, 170, 255, 0)");
-    ctx.fillStyle = g;
+    const pc = typeof p.c === "number" ? PALETTES[p.c % PALETTES.length] : PEER_COLOR;
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = glowGradient(px, py, 18, pc, 0.3);
     ctx.beginPath();
     ctx.arc(px, py, 18, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#dfe9ff";
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = pc.core;
     ctx.beginPath();
     ctx.arc(px, py, 1.8, 0, Math.PI * 2);
     ctx.fill();
@@ -290,15 +331,11 @@ function frame(t) {
   }
 
   // player glow
-  const g = ctx.createRadialGradient(player.x, player.y, 0, player.x, player.y, 26);
-  g.addColorStop(0, "rgba(255, 244, 225, 0.95)");
-  g.addColorStop(0.25, "rgba(255, 190, 120, 0.35)");
-  g.addColorStop(1, "rgba(255, 160, 90, 0)");
-  ctx.fillStyle = g;
+  ctx.fillStyle = glowGradient(player.x, player.y, 26, pal, 0.35);
   ctx.beginPath();
   ctx.arc(player.x, player.y, 26, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "#fff8ec";
+  ctx.fillStyle = pal.core;
   ctx.beginPath();
   ctx.arc(player.x, player.y, 2.6, 0, Math.PI * 2);
   ctx.fill();

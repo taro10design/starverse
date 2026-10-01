@@ -7,6 +7,7 @@ interface Session {
   id: string;
   x: number;
   y: number;
+  c: number;
 }
 
 // 宇宙という名の部屋。全員がここにいる。
@@ -19,7 +20,7 @@ export class Universe {
 
     const id = crypto.randomUUID().slice(0, 8);
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id, x: 0.5, y: 0.5 } satisfies Session);
+    server.serializeAttachment({ id, x: 0.5, y: 0.5, c: 0 } satisfies Session);
 
     // 新しく来た人に、今いる全員の位置を渡す
     const dots: Session[] = [];
@@ -43,8 +44,9 @@ export class Universe {
       if (data.t === "p") {
         meta.x = data.x;
         meta.y = data.y;
+        if (typeof data.c === "number") meta.c = data.c;
         ws.serializeAttachment(meta);
-        this.broadcast(ws, { t: "p", id: meta.id, x: data.x, y: data.y });
+        this.broadcast(ws, { t: "p", id: meta.id, x: data.x, y: data.y, c: meta.c });
       } else if (data.t === "pulse") {
         this.broadcast(ws, { t: "pulse", x: data.x, y: data.y });
       }
