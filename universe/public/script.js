@@ -80,6 +80,9 @@ for (let i = 0; i < STAR_N; i++) {
 
 // --- 他の光たち（本物の人間） ---
 const peers = new Map(); // id -> {x,y,rx,ry,c} 正規化座標
+const fixed = new Map(); // id -> FixedStar 灯された星（正規化座標）
+let pairsDirty = true;
+let pairList = []; // [{a,b,binary}]
 let ws = null;
 let myId = null;
 let retry = 1500;
@@ -103,12 +106,20 @@ function connect() {
     if (m.t === "welcome") {
       myId = m.id;
       for (const d of m.dots) peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y, c: d.c });
+      for (const s of m.stars || []) fixed.set(s.id, s);
+      pairsDirty = true;
     } else if (m.t === "p") {
       const p = peers.get(m.id) || { x: m.x, y: m.y, rx: m.x, ry: m.y, c: m.c };
       p.x = m.x;
       p.y = m.y;
       if (typeof m.c === "number") p.c = m.c;
       peers.set(m.id, p);
+    } else if (m.t === "star") {
+      fixed.set(m.id, m);
+      pairsDirty = true;
+    } else if (m.t === "unstar") {
+      fixed.delete(m.id);
+      pairsDirty = true;
     } else if (m.t === "pulse") {
       pulses.push({ x: m.x * W, y: m.y * H, r: 0, life: 0.8 });
     } else if (m.t === "leave") {
@@ -140,15 +151,50 @@ function autopilot(t) {
   };
 }
 
+// 長押しで星を灯す / 自分の星をタップで消す
+function placeStar(nx, ny) {
+  const s = { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: myColor, by: myId || "me", ts: Date.now() };
+  fixed.set(s.id, s);
+  pairsDirty = true;
+  send({ t: "star", id: s.id, x: s.x, y: s.y });
+}
+function unstarAt(x, y) {
+  for (const s of fixed.values()) {
+    const dx = s.x * W - x;
+    const dy = s.y * H - y;
+    if (dx * dx + dy * dy < 20 * 20 && (s.by === myId || s.by === "me")) {
+      fixed.delete(s.id);
+      pairsDirty = true;
+      send({ t: "unstar", id: s.id });
+      return;
+    }
+  }
+}
+
+let downAt = 0, downX = 0, downY = 0;
 addEventListener("pointermove", (e) => {
   target = { x: e.clientX, y: e.clientY };
 });
 addEventListener("pointerdown", (e) => {
   target = { x: e.clientX, y: e.clientY };
+  downAt = performance.now();
+  downX = e.clientX;
+  downY = e.clientY;
   pulses.push({ x: e.clientX, y: e.clientY, r: 0, life: 1 });
   send({ t: "pulse", x: e.clientX / W, y: e.clientY / H });
   ping();
   haptic();
+});
+addEventListener("pointerup", (e) => {
+  if (e.target.closest && e.target.closest("#palette")) return;
+  const held = performance.now() - downAt;
+  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (moved > 12) return;
+  if (held >= 400) {
+    placeStar(e.clientX / W, e.clientY / H);
+  } else {
+    unstarAt(e.clientX, e.clientY);
+  }
 });
 
 addEventListener("contextmenu", (e) => e.preventDefault());
@@ -194,6 +240,27 @@ function glowGradient(x, y, radius, p, midAlpha) {
   g.addColorStop(0.3, `rgba(${p.glow.join(",")},${midAlpha})`);
   g.addColorStop(1, `rgba(${p.glow.join(",")},0)`);
   return g;
+}
+
+function hashPhase(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return (h % 628) / 100;
+}
+
+function drawFixedStar(s, x, y, t) {
+  const p = PALETTES[s.c % PALETTES.length] || PEER_COLOR;
+  const tw = 0.7 + 0.3 * Math.sin(t * 0.002 + hashPhase(s.id) * 10);
+  ctx.globalAlpha = 0.9 * tw;
+  ctx.fillStyle = glowGradient(x, y, 14, p, 0.28);
+  ctx.beginPath();
+  ctx.arc(x, y, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = p.core;
+  ctx.beginPath();
+  ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
 }
 
 function frame(t) {
@@ -302,6 +369,49 @@ function frame(t) {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+
+  // --- 灯された星・星座・連星 ---
+  if (pairsDirty) {
+    pairList = [];
+    const arr = [...fixed.values()];
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = i + 1; j < arr.length; j++) {
+        const dx = (arr[i].x - arr[j].x) * W;
+        const dy = (arr[i].y - arr[j].y) * H;
+        const d = Math.hypot(dx, dy);
+        if (d < 110) pairList.push({ a: arr[i], b: arr[j], binary: d < 36 });
+      }
+    }
+    pairsDirty = false;
+  }
+
+  // 星座線（連星は除く）
+  ctx.strokeStyle = "rgba(200, 215, 255, 0.18)";
+  ctx.lineWidth = 0.8;
+  for (const pair of pairList) {
+    if (pair.binary) continue;
+    ctx.beginPath();
+    ctx.moveTo(pair.a.x * W, pair.a.y * H);
+    ctx.lineTo(pair.b.x * W, pair.b.y * H);
+    ctx.stroke();
+  }
+
+  const drawn = new Set();
+  for (const pair of pairList) {
+    if (!pair.binary) continue;
+    const { a, b } = pair;
+    const mx = ((a.x + b.x) / 2) * W;
+    const my = ((a.y + b.y) / 2) * H;
+    const r = (Math.hypot((a.x - b.x) * W, (a.y - b.y) * H) / 2) || 8;
+    const ang = t * 0.0006 + hashPhase(a.id) + hashPhase(b.id);
+    drawFixedStar(a, mx + Math.cos(ang) * r, my + Math.sin(ang) * r, t);
+    drawFixedStar(b, mx - Math.cos(ang) * r, my - Math.sin(ang) * r, t);
+    drawn.add(a.id);
+    drawn.add(b.id);
+  }
+  for (const s of fixed.values()) {
+    if (!drawn.has(s.id)) drawFixedStar(s, s.x * W, s.y * H, t);
+  }
 
   // --- 他の光（実在の誰か、色つき） ---
   for (const p of peers.values()) {
