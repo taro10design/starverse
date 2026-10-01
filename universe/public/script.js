@@ -1,4 +1,4 @@
-// universe — 言葉のない空間。あなたは一点の光。
+// universe — 言葉のない空間。あなたは一点の光。他の光もいる。
 const canvas = document.getElementById("space");
 const ctx = canvas.getContext("2d");
 const trail = document.createElement("canvas");
@@ -46,6 +46,54 @@ for (let i = 0; i < STAR_N; i++) {
   });
 }
 
+// --- 他の光たち（本物の人間） ---
+const peers = new Map(); // id -> {x,y,rx,ry} 正規化座標
+let ws = null;
+let myId = null;
+let retry = 1500;
+let lastSend = 0;
+
+function connect() {
+  if (location.protocol === "file:") return;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${scheme}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    retry = 1500;
+    sendPos();
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.t === "welcome") {
+      myId = m.id;
+      for (const d of m.dots) peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y });
+    } else if (m.t === "p") {
+      const p = peers.get(m.id) || { x: m.x, y: m.y, rx: m.x, ry: m.y };
+      p.x = m.x;
+      p.y = m.y;
+      peers.set(m.id, p);
+    } else if (m.t === "pulse") {
+      pulses.push({ x: m.x * W, y: m.y * H, r: 0, life: 0.8 });
+    } else if (m.t === "leave") {
+      peers.delete(m.id);
+    }
+  };
+  ws.onclose = () => {
+    peers.clear();
+    setTimeout(connect, retry);
+    retry = Math.min(retry * 1.6, 15000);
+  };
+  ws.onerror = () => ws.close();
+}
+connect();
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+function sendPos() {
+  send({ t: "p", x: player.x / W, y: player.y / H });
+}
+
 // ポインタが来るまでは自分で漂う
 function autopilot(t) {
   const s = t * 0.00022;
@@ -61,6 +109,7 @@ addEventListener("pointermove", (e) => {
 addEventListener("pointerdown", (e) => {
   target = { x: e.clientX, y: e.clientY };
   pulses.push({ x: e.clientX, y: e.clientY, r: 0, life: 1 });
+  send({ t: "pulse", x: e.clientX / W, y: e.clientY / H });
   ping();
   haptic();
 });
@@ -117,6 +166,12 @@ function frame(t) {
   player.vy *= Math.pow(0.90, dt);
   player.x += player.vx * dt;
   player.y += player.vy * dt;
+
+  // 位置を世界に送る（80ms間隔で十分滑らかに見える）
+  if (t - lastSend > 80) {
+    lastSend = t;
+    sendPos();
+  }
 
   // --- 軌跡レイヤー（残像） ---
   tctx.fillStyle = "rgba(4, 6, 18, 0.09)";
@@ -201,6 +256,26 @@ function frame(t) {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+
+  // --- 他の光（実在の誰か） ---
+  for (const p of peers.values()) {
+    p.rx += (p.x - p.rx) * Math.min(1, 0.12 * dt);
+    p.ry += (p.y - p.ry) * Math.min(1, 0.12 * dt);
+    const px = p.rx * W;
+    const py = p.ry * H;
+    const g = ctx.createRadialGradient(px, py, 0, px, py, 18);
+    g.addColorStop(0, "rgba(210, 228, 255, 0.8)");
+    g.addColorStop(0.3, "rgba(160, 190, 255, 0.25)");
+    g.addColorStop(1, "rgba(140, 170, 255, 0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(px, py, 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#dfe9ff";
+    ctx.beginPath();
+    ctx.arc(px, py, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   for (const p of pulses) {
     ctx.strokeStyle = `rgba(255, 230, 200, ${0.5 * p.life})`;

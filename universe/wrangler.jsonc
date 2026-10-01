@@ -1,5 +1,13 @@
 {
-  "name": "uchu",
+  "name": "universe",
+  "main": "./src/worker.ts",
   "compatibility_date": "2026-10-01",
-  "pages_build_output_dir": "./public"
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "UNIVERSE", "class_name": "Universe" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Universe"] }]
 }
