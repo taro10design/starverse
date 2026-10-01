@@ -69,7 +69,7 @@ export class Universe {
         ws.serializeAttachment(meta);
         this.broadcast(ws, { t: "p", id: meta.id, x: data.x, y: data.y, c: meta.c });
       } else if (data.t === "pulse") {
-        this.broadcast(ws, { t: "pulse", x: data.x, y: data.y });
+        this.broadcast(ws, { t: "pulse", x: data.x, y: data.y, c: meta.c });
       } else if (data.t === "star") {
         this.placeStar(ws, meta, data);
       } else if (data.t === "unstar") {
