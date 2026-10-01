@@ -80,9 +80,10 @@ const TOOL_SVG = {
   move: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>',
   star: '<svg viewBox="0 0 24 24"><path d="M12 3 L14.2 9.8 L21 12 L14.2 14.2 L12 21 L9.8 14.2 L3 12 L9.8 9.8 Z" fill="currentColor"/></svg>',
   line: '<svg viewBox="0 0 24 24"><path d="M4 20 L20 4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="4" cy="20" r="2.4" fill="currentColor"/><circle cx="20" cy="4" r="2.4" fill="currentColor"/></svg>',
+  erase: '<svg viewBox="0 0 24 24"><path d="M5 19 L13 5 L19 11 L11 19 Z" fill="currentColor"/><path d="M4 21 L20 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
-const TOOL_TIPS = { move: "光を動かす", star: "星を置く", line: "線を引く" };
-for (const name of ["move", "star", "line"]) {
+const TOOL_TIPS = { move: "光を動かす", star: "星を置く", line: "線を引く", erase: "自分の星を消す" };
+for (const name of ["move", "star", "line", "erase"]) {
   const b = document.createElement("button");
   b.className = "tool" + (name === tool ? " on" : "");
   b.innerHTML = TOOL_SVG[name];
@@ -90,6 +91,10 @@ for (const name of ["move", "star", "line"]) {
   b.setAttribute("aria-label", TOOL_TIPS[name]);
   b.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
+    if (name === "erase" && tool === "erase") {
+      clearMine(); // 消モードでもう一度押す＝自分の星を全部消す
+      return;
+    }
     tool = name;
     toolsEl.querySelectorAll(".tool").forEach((el) => el.classList.toggle("on", el === b));
   });
@@ -108,6 +113,7 @@ help.innerHTML = `
   <p class="dim">● 光：タップで波、動かすとついてくる。自分の星タップで消える</p>
   <p class="dim">✦ 星：タップで置く、なぞると連続で置ける</p>
   <p class="dim">─ 線：星から星へなぞって自分で線を引く</p>
+  <p class="dim">⌫ 消：なぞって自分の星を消す。もう一度押すと全部消える</p>
   <p>近くの星どうし — 線がつながって星座に</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>ピンチ / ホイール — ズーム</p>
@@ -250,11 +256,15 @@ function soloLoad() {
     pairsDirty = true;
   } catch {}
 }
+let saveTimer = 0;
 function soloSave() {
   if (!SOLO) return;
-  try {
-    localStorage.setItem("uchu-solo", JSON.stringify({ stars: [...fixed.values()], links: [...links.values()] }));
-  } catch {}
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem("uchu-solo", JSON.stringify({ stars: [...fixed.values()], links: [...links.values()] }));
+    } catch {}
+  }, 400); // 連続配置中は書き込みをまとめる
 }
 if (SOLO) {
   myId = "me";
@@ -281,7 +291,7 @@ function autopilot(t) {
 const pointers = new Map();
 let pinch = null;
 let downAt = 0, downX = 0, downY = 0, downTarget = null;
-let linking = null, linkTip = null, lastPlaced = null;
+let linking = null, linkTip = null, lastPlaced = null, erasing = false;
 
 // 画面上の点に一番近い星を返す（hit px 以内）
 function starAt(sx, sy, hit = 18, exclude = null) {
@@ -355,6 +365,9 @@ addEventListener("pointerdown", (e) => {
     } else {
       target = { x: wx, y: wy }; // 空を掴んだら普通に動く
     }
+  } else if (tool === "erase") {
+    erasing = true;
+    eraseAt(e.clientX, e.clientY);
   }
 });
 
@@ -381,6 +394,10 @@ addEventListener("pointermove", (e) => {
     cam.cx = pinch.wx - (m.x - W / 2) / scalePx();
     cam.cy = pinch.wy - (m.y - H / 2) / scalePx();
     freeCam = true;
+    return;
+  }
+  if (erasing && p) {
+    eraseAt(e.clientX, e.clientY); // なぞった自分の星を消していく
     return;
   }
   if (tool === "star" && p) {
@@ -410,6 +427,7 @@ addEventListener("pointerup", (e) => {
     return;
   }
   lastPlaced = null;
+  erasing = false;
   if (wasPinch || pointers.size > 0) return;
   if (downTarget !== canvas) return;
 
@@ -422,6 +440,7 @@ addEventListener("pointercancel", (e) => {
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
   linking = linkTip = lastPlaced = null;
+  erasing = false;
 });
 
 addEventListener(
@@ -453,15 +472,30 @@ function placeStar(nx, ny) {
   soloSave();
   send({ t: "star", id: s.id, x: s.x, y: s.y });
 }
+function deleteStar(s) {
+  fixed.delete(s.id);
+  dropLinksTouching(s.id);
+  pairsDirty = true;
+  soloSave();
+  send({ t: "unstar", id: s.id });
+}
 function unstarAt(x, y) {
   const s = starAt(x, y, 20);
-  if (s && (s.by === myId || s.by === "me")) {
-    fixed.delete(s.id);
-    dropLinksTouching(s.id);
-    pairsDirty = true;
-    soloSave();
-    send({ t: "unstar", id: s.id });
+  if (s && (s.by === myId || s.by === "me")) deleteStar(s);
+}
+function eraseAt(x, y) {
+  const s = starAt(x, y, 16);
+  if (s && (s.by === myId || s.by === "me")) deleteStar(s);
+}
+function clearMine() {
+  let n = 0;
+  for (const s of [...fixed.values()]) {
+    if (s.by === myId || s.by === "me") {
+      deleteStar(s);
+      n++;
+    }
   }
+  if (n) haptic();
 }
 
 // Androidはnavigator.vibrate、iOS Safariはswitchハックで触覚を出す
@@ -498,12 +532,25 @@ function ping() {
   } catch {}
 }
 
-function glowGradient(x, y, radius, p, midAlpha) {
-  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+// グローは色ごとのスプライトを使い回す（毎フレームのグラデーション生成を避ける）
+function makeSprite(p, midAlpha) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g2 = c.getContext("2d");
+  const g = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
   g.addColorStop(0, p.core);
   g.addColorStop(0.3, `rgba(${p.glow.join(",")},${midAlpha})`);
   g.addColorStop(1, `rgba(${p.glow.join(",")},0)`);
-  return g;
+  g2.fillStyle = g;
+  g2.fillRect(0, 0, 64, 64);
+  return c;
+}
+const starSprites = PALETTES.map((p) => makeSprite(p, 0.28));
+const peerSprite = makeSprite(PEER_COLOR, 0.3);
+const playerSprites = PALETTES.map((p) => makeSprite(p, 0.35));
+
+function drawGlow(x, y, r, sprite) {
+  ctx.drawImage(sprite, x - r, y - r, r * 2, r * 2);
 }
 
 function hashPhase(id) {
@@ -524,10 +571,7 @@ function drawFixedStar(s, wx, wy, t) {
   const tw = 0.7 + 0.3 * Math.sin(t * 0.002 + hashPhase(s.id) * 10);
   const r = 14 * dotScale();
   ctx.globalAlpha = 0.9 * tw;
-  ctx.fillStyle = glowGradient(x, y, r, p, 0.28);
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
+  drawGlow(x, y, r, starSprites[s.c % PALETTES.length]);
   ctx.fillStyle = p.core;
   ctx.beginPath();
   ctx.arc(x, y, 2.2 * dotScale(), 0, Math.PI * 2);
@@ -782,10 +826,7 @@ function frame(t) {
     const pc = typeof p.c === "number" ? PALETTES[p.c % PALETTES.length] : PEER_COLOR;
     const r = 18 * dotScale();
     ctx.globalAlpha = 0.75;
-    ctx.fillStyle = glowGradient(px, py, r, pc, 0.3);
-    ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fill();
+    drawGlow(px, py, r, typeof p.c === "number" ? starSprites[p.c % PALETTES.length] : peerSprite);
     ctx.globalAlpha = 1;
     ctx.fillStyle = pc.core;
     ctx.beginPath();
@@ -805,10 +846,7 @@ function frame(t) {
   // player glow
   const pal = PALETTES[myColor];
   const pr = 26 * dotScale();
-  ctx.fillStyle = glowGradient(ppsx, ppsy, pr, pal, 0.35);
-  ctx.beginPath();
-  ctx.arc(ppsx, ppsy, pr, 0, Math.PI * 2);
-  ctx.fill();
+  drawGlow(ppsx, ppsy, pr, playerSprites[myColor]);
   ctx.fillStyle = pal.core;
   ctx.beginPath();
   ctx.arc(ppsx, ppsy, 2.6 * dotScale(), 0, Math.PI * 2);

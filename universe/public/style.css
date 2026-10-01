@@ -196,3 +196,19 @@ body {
   margin-top: 6px;
   color: rgba(160, 175, 215, 0.6);
 }
+
+/* 狭い画面ではツールを左端の縦列にしてパレットと重ならないように */
+@media (max-width: 520px) {
+  #tools {
+    flex-direction: column;
+    bottom: 60px;
+    gap: 6px;
+  }
+  .tool {
+    width: 28px;
+    height: 28px;
+  }
+  #helpbtn {
+    bottom: 22px;
+  }
+}
