@@ -38,12 +38,12 @@ const PALETTES = [
 ];
 const PEER_COLOR = { core: "#dfe9ff", glow: [160, 190, 255] };
 
-// このブラウザ固有の持ち主ID（リロードしても自分の星は自分のもの）
-let MY_UID = localStorage.getItem("uchu-uid");
-if (!MY_UID) {
+// このブラウザ固有の持ち主ID。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）
+let MY_UID = new URLSearchParams(location.search).get("key") || localStorage.getItem("uchu-uid");
+if (!MY_UID || !/^[\w-]{8,64}$/.test(MY_UID)) {
   MY_UID = crypto.randomUUID();
-  localStorage.setItem("uchu-uid", MY_UID);
 }
+localStorage.setItem("uchu-uid", MY_UID);
 function isMine(s) {
   return s.by === MY_UID || s.by === "me" || s.by === myId;
 }
@@ -134,6 +134,7 @@ help.innerHTML = `
   <p>右上の地図 — 触れた場所へ光を送る</p>
   <p>右下 — ひとりの宇宙と切り替え</p>
   <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。混んだ場所の星は早く消え、見てもらった星は長生きする"}</p>
+  <p class="dim"><button id="keybtn">鍵リンクをコピー</button> 別の端末・ブラウザでも自分の星として開ける</p>
 `;
 helpBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
@@ -141,6 +142,24 @@ helpBtn.addEventListener("pointerdown", (e) => {
 });
 document.body.appendChild(helpBtn);
 document.body.appendChild(help);
+
+// 「鍵リンク」＝uid入りURL。このリンクで開くとどのブラウザでも自分の星のまま
+const keyBtn = help.querySelector("#keybtn");
+keyBtn.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  const url = location.origin + location.pathname + "?key=" + MY_UID;
+  const done = () => {
+    keyBtn.textContent = "コピーした";
+    setTimeout(() => (keyBtn.textContent = "鍵リンクをコピー"), 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(done).catch(() => {
+      prompt("このリンクを保存してね", url);
+    });
+  } else {
+    prompt("このリンクを保存してね", url);
+  }
+});
 if (!localStorage.getItem("uchu-seen")) {
   help.classList.add("open");
 }

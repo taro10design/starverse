@@ -197,6 +197,16 @@ body {
   color: rgba(160, 175, 215, 0.6);
 }
 
+#keybtn {
+  border: 1px solid rgba(160, 190, 255, 0.3);
+  background: rgba(160, 190, 255, 0.12);
+  color: rgba(210, 225, 255, 0.85);
+  font-size: 0.68rem;
+  padding: 3px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
 /* 狭い画面ではツールを左端の縦列にしてパレットと重ならないように */
 @media (max-width: 520px) {
   #tools {
