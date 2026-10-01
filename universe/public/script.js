@@ -122,16 +122,18 @@ help.id = "help";
 help.innerHTML = `
   <p>左下 — モードを切り替える</p>
   <p class="dim">● 光：タップで波、動かすとついてくる。自分の星タップで消える</p>
+  <p class="dim">他人の星をタップ — きらめきを送る。その星は長生きする</p>
   <p class="dim">✦ 星：タップで置く、なぞると連続で置ける</p>
   <p class="dim">─ 線：星から星へなぞって自分で線を引く</p>
-  <p class="dim">⌫ 消：なぞって自分の星を消す。もう一度押すと全部消える</p>
+  <p class="dim">⌫ 消：誰の星でも消せる。もう一度押すと自分のが全部消える</p>
+  <p class="dim">消えた自分の星は幽霊として残る。タップで復活</p>
   <p>近くの星どうし — 線がつながって星座に</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>ピンチ / ホイール — ズーム</p>
   <p>下の点 — 自分の色</p>
   <p>右上の地図 — 触れた場所へ光を送る</p>
   <p>右下 — ひとりの宇宙と切り替え</p>
-  <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。星と線は24時間で消える"}</p>
+  <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。混んだ場所の星は早く消え、見てもらった星は長生きする"}</p>
 `;
 helpBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
@@ -197,6 +199,33 @@ for (let i = 0; i < STAR_N; i++) {
 const peers = new Map(); // id -> {x,y,rx,ry,c}
 const fixed = new Map(); // id -> FixedStar（ワールド座標）
 const links = new Map(); // id -> {id,a,b,by,ts}　誰かが手で引いた線
+const STAR_TTL = 3 * 60 * 60 * 1000; // 孤立した星の寿命
+const CROWD_R = 0.06; // 「混んでる」とみなす近傍半径
+const GHOST_TTL = 24 * 60 * 60 * 1000; // 幽霊が覚えている期間
+
+// 消された自分の星は幽霊として自分の画面にだけ残り、タップで復活できる
+const ghosts = new Map(); // id -> {id,x,y,c,gone}
+function ghostsLoad() {
+  try {
+    for (const g of JSON.parse(localStorage.getItem("uchu-ghosts") || "[]")) {
+      if (Date.now() - g.gone < GHOST_TTL) ghosts.set(g.id, g);
+    }
+  } catch {}
+}
+function ghostsSave() {
+  try {
+    localStorage.setItem("uchu-ghosts", JSON.stringify([...ghosts.values()].slice(-128)));
+  } catch {}
+}
+ghostsLoad();
+
+// 周囲の星の数で寿命が決まる。密集スパムは1分で自壊する
+function ttlFor(crowd) {
+  if (crowd >= 8) return 60 * 1000;
+  if (crowd >= 5) return 5 * 60 * 1000;
+  if (crowd >= 2) return 30 * 60 * 1000;
+  return STAR_TTL;
+}
 let pairsDirty = true;
 let pairList = [];
 let ws = null;
@@ -222,7 +251,10 @@ function connect() {
     if (m.t === "welcome") {
       myId = m.id;
       for (const d of m.dots) peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y, c: d.c });
-      for (const s of m.stars || []) fixed.set(s.id, s);
+      for (const s of m.stars || []) {
+        fixed.set(s.id, s);
+        ghosts.delete(s.id); // 生きてるなら幽霊は要らない
+      }
       for (const l of m.links || []) links.set(l.id, l);
       pairsDirty = true;
     } else if (m.t === "p") {
@@ -233,11 +265,23 @@ function connect() {
       peers.set(m.id, p);
     } else if (m.t === "star") {
       fixed.set(m.id, m);
+      ghosts.delete(m.id);
       pairsDirty = true;
     } else if (m.t === "unstar") {
+      const s = fixed.get(m.id);
+      if (s && s.by === MY_UID) {
+        ghosts.set(m.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: Date.now() }); // 自分の星は幽霊になる
+        ghostsSave();
+      }
       fixed.delete(m.id);
       dropLinksTouching(m.id);
       pairsDirty = true;
+    } else if (m.t === "admire") {
+      const s = fixed.get(m.id);
+      if (s) {
+        s.ts = m.ts;
+        s.flash = performance.now();
+      }
     } else if (m.t === "link") {
       links.set(m.id, m);
     } else if (m.t === "unlink") {
@@ -281,6 +325,31 @@ if (SOLO) {
   myId = "me";
   soloLoad();
 }
+
+// 寿命切れの星・線をクライアント側でも定期的に落とす
+setInterval(() => {
+  const now = Date.now();
+  let dirty = false;
+  for (const [id, s] of fixed) {
+    if (now - s.ts > ttlFor(s.n || 0)) {
+      fixed.delete(id);
+      dropLinksTouching(id);
+      dirty = true;
+    }
+  }
+  if (dirty) {
+    pairsDirty = true;
+    soloSave();
+  }
+  let gdirty = false;
+  for (const [id, g] of ghosts) {
+    if (now - g.gone > GHOST_TTL) {
+      ghosts.delete(id);
+      gdirty = true;
+    }
+  }
+  if (gdirty) ghostsSave();
+}, 15000);
 
 function send(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
@@ -364,6 +433,8 @@ addEventListener("pointerdown", (e) => {
     const s = starAt(e.clientX, e.clientY);
     if (s && isMine(s)) {
       unstarAt(e.clientX, e.clientY); // 自分の星の上なら消す
+    } else if (s) {
+      admire(s); // 他人の星に触れたらきらめきを送る
     } else {
       placeStar(wx, wy);
       lastPlaced = [e.clientX, e.clientY];
@@ -444,7 +515,16 @@ addEventListener("pointerup", (e) => {
 
   const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
   if (moved > 12) return;
-  if (tool === "move") unstarAt(e.clientX, e.clientY); // 自分の星をタップで消す
+  if (tool === "move") {
+    const s = starAt(e.clientX, e.clientY, 20);
+    if (s) {
+      if (isMine(s)) deleteStar(s); // 自分の星をタップで消す
+      else admire(s); // 他人の星をタップできらめき
+    } else {
+      const g = ghostAt(e.clientX, e.clientY);
+      if (g) revive(g); // 消えた自分の星はタップで復活
+    }
+  }
 });
 addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
@@ -476,14 +556,37 @@ addEventListener("pointerdown", (e) => {
   }
 });
 
-function placeStar(nx, ny) {
-  const s = { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: myColor, by: MY_UID, ts: Date.now() };
+function placeStar(nx, ny, g) {
+  const s = g
+    ? { id: g.id, x: g.x, y: g.y, c: g.c, by: MY_UID, ts: Date.now() } // 幽霊の復活
+    : { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: myColor, by: MY_UID, ts: Date.now() };
   fixed.set(s.id, s);
   pairsDirty = true;
   soloSave();
   send({ t: "star", id: s.id, x: s.x, y: s.y, uid: MY_UID });
 }
+function ghostAt(sx, sy, hit = 20) {
+  const [wx, wy] = s2w(sx, sy);
+  const h = hit / scalePx();
+  let best = null, bd = h * h;
+  for (const g of ghosts.values()) {
+    const dx = g.x - wx, dy = g.y - wy, d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = g; }
+  }
+  return best;
+}
+function revive(g) {
+  ghosts.delete(g.id);
+  ghostsSave();
+  placeStar(g.x, g.y, g);
+  ping();
+  haptic();
+}
 function deleteStar(s) {
+  if (s.by === MY_UID) {
+    ghosts.set(s.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: Date.now() });
+    ghostsSave();
+  }
   fixed.delete(s.id);
   dropLinksTouching(s.id);
   pairsDirty = true;
@@ -496,7 +599,7 @@ function unstarAt(x, y) {
 }
 function eraseAt(x, y) {
   const s = starAt(x, y, 16);
-  if (s && isMine(s)) deleteStar(s);
+  if (s) deleteStar(s); // 消モードは誰の星でも消せる
 }
 function clearMine() {
   let n = 0;
@@ -507,6 +610,13 @@ function clearMine() {
     }
   }
   if (n) haptic();
+}
+// 他人の星をタップ＝きらめきを送る。寿命がリセットされる
+function admire(s) {
+  s.flash = performance.now();
+  pulses.push({ x: s.x, y: s.y, r: 0, life: 0.9, col: PALETTES[s.c % PALETTES.length].glow });
+  ping();
+  send({ t: "admire", id: s.id });
 }
 
 // Androidはnavigator.vibrate、iOS Safariはswitchハックで触覚を出す
@@ -580,12 +690,17 @@ function drawFixedStar(s, wx, wy, t) {
   if (x < -30 || x > W + 30 || y < -30 || y > H + 30) return;
   const p = PALETTES[s.c % PALETTES.length] || PEER_COLOR;
   const tw = 0.7 + 0.3 * Math.sin(t * 0.002 + hashPhase(s.id) * 10);
-  const r = 14 * dotScale();
-  ctx.globalAlpha = 0.9 * tw;
+  // 老いるほど薄れる。残り寿命の後半50%からフェード
+  const remain = 1 - (Date.now() - s.ts) / ttlFor(s.n || 0);
+  const fade = remain > 0.5 ? 1 : Math.max(0.05, remain * 2);
+  const flash = s.flash ? Math.max(0, 1 - (t - s.flash) / 900) : 0;
+  const r = 14 * dotScale() * (1 + flash * 0.5);
+  ctx.globalAlpha = Math.min(1, 0.9 * tw * fade + flash * 0.5);
   drawGlow(x, y, r, starSprites[s.c % PALETTES.length]);
   ctx.fillStyle = p.core;
+  ctx.globalAlpha = Math.min(1, fade + flash);
   ctx.beginPath();
-  ctx.arc(x, y, 2.2 * dotScale(), 0, Math.PI * 2);
+  ctx.arc(x, y, 2.2 * dotScale() * (1 + flash * 0.5), 0, Math.PI * 2);
   ctx.fill();
   ctx.globalAlpha = 1;
 }
@@ -758,10 +873,15 @@ function frame(t) {
   if (pairsDirty) {
     pairList = [];
     const arr = [...fixed.values()];
+    for (const s of arr) s.n = 0;
     for (let i = 0; i < arr.length; i++) {
       for (let j = i + 1; j < arr.length; j++) {
         const d = Math.hypot(arr[i].x - arr[j].x, arr[i].y - arr[j].y);
         if (d < 0.10) pairList.push({ a: arr[i], b: arr[j], binary: d < 0.032 });
+        if (d < CROWD_R) {
+          arr[i].n++;
+          arr[j].n++;
+        }
       }
     }
     pairsDirty = false;
@@ -800,6 +920,20 @@ function frame(t) {
   for (const s of fixed.values()) {
     if (!drawn.has(s.id)) drawFixedStar(s, s.x, s.y, t);
   }
+
+  // 幽霊（消えた自分の星。自分にだけ見える墓標）
+  ctx.setLineDash([3, 4]);
+  for (const g of ghosts.values()) {
+    const [gx, gy] = w2s(g.x, g.y);
+    if (gx < -20 || gx > W + 20 || gy < -20 || gy > H + 20) continue;
+    const p = PALETTES[g.c % PALETTES.length];
+    ctx.strokeStyle = `rgba(${p.glow.join(",")},0.22)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(gx, gy, 5 * dotScale(), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
 
   // 手で引かれた線（意図の線。自動の星座線より少し明るい）
   ctx.strokeStyle = "rgba(225, 230, 255, 0.3)";

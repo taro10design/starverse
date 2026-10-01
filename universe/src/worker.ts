@@ -32,7 +32,16 @@ const MAX_STARS = 500;
 const MAX_STARS_PER_USER = 64;
 const MAX_LINKS = 600;
 const MAX_LINKS_PER_USER = 96;
-const STAR_TTL = 24 * 60 * 60 * 1000; // 星は一日で消える
+const STAR_TTL = 3 * 60 * 60 * 1000; // 孤立した星の寿命
+const CROWD_R = 0.06; // 「混んでる」とみなす近傍半径（ワールド座標）
+
+// 周囲の星の数で寿命が決まる。密集スパムは1分で自壊する
+function ttlFor(crowd: number): number {
+  if (crowd >= 8) return 60 * 1000;
+  if (crowd >= 5) return 5 * 60 * 1000;
+  if (crowd >= 2) return 30 * 60 * 1000;
+  return STAR_TTL;
+}
 
 // 宇宙という名の部屋。全員がここにいる。
 export class Universe {
@@ -88,6 +97,13 @@ export class Universe {
         this.placeStar(ws, meta, data);
       } else if (data.t === "unstar") {
         this.removeStar(ws, meta, String(data.id), typeof data.uid === "string" ? data.uid : "");
+      } else if (data.t === "admire") {
+        const s = this.stars.get(String(data.id));
+        if (s) {
+          s.ts = Date.now(); // 見てもらった星は息を吹き返す
+          this.ctx.waitUntil(this.ctx.storage.put("stars", [...this.stars.values()]));
+          this.broadcast(null, { t: "admire", id: s.id, ts: s.ts });
+        }
       } else if (data.t === "link") {
         this.addLink(ws, meta, String(data.a), String(data.b), typeof data.uid === "string" ? data.uid : "");
       } else if (data.t === "unlink") {
@@ -119,7 +135,7 @@ export class Universe {
 
   private removeStar(ws: WebSocket, meta: Session, starId: string, uid: string) {
     const s = this.stars.get(starId);
-    if (!s || !uid || s.by !== uid) return; // 自分の星しか消せない
+    if (!s) return; // 誰でも消せる。持ち主は幽霊から復活できる
     this.stars.delete(s.id);
     this.ctx.waitUntil(this.ctx.storage.put("stars", [...this.stars.values()]));
     this.broadcast(ws, { t: "unstar", id: s.id });
@@ -160,11 +176,31 @@ export class Universe {
 
   private prune() {
     const now = Date.now();
+    const arr = [...this.stars.values()];
+    const crowd = new Map<string, number>();
+    for (const s of arr) crowd.set(s.id, 0);
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = i + 1; j < arr.length; j++) {
+        const dx = arr[i].x - arr[j].x;
+        const dy = arr[i].y - arr[j].y;
+        if (dx * dx + dy * dy < CROWD_R * CROWD_R) {
+          crowd.set(arr[i].id, crowd.get(arr[i].id)! + 1);
+          crowd.set(arr[j].id, crowd.get(arr[j].id)! + 1);
+        }
+      }
+    }
     let dirty = false;
-    for (const [id, s] of this.stars) {
-      if (now - s.ts > STAR_TTL) {
-        this.stars.delete(id);
+    for (const s of arr) {
+      if (now - s.ts > ttlFor(crowd.get(s.id) || 0)) {
+        this.stars.delete(s.id);
         dirty = true;
+        this.broadcast(null, { t: "unstar", id: s.id });
+        for (const [lid, l] of this.links) {
+          if (l.a === s.id || l.b === s.id) {
+            this.links.delete(lid);
+            this.broadcast(null, { t: "unlink", id: lid });
+          }
+        }
       }
     }
     if (dirty) this.ctx.waitUntil(this.ctx.storage.put("stars", [...this.stars.values()]));
@@ -175,7 +211,7 @@ export class Universe {
         ldirty = true;
       }
     }
-    if (ldirty) this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
+    if (ldirty || dirty) this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
   }
 
   webSocketClose(ws: WebSocket) {
