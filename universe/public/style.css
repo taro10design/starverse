@@ -87,7 +87,32 @@ body {
 
 #mode {
   right: 22px;
-  width: 34px;
+  width: auto;
+  padding: 0 10px;
+  border-radius: 13px;
+  gap: 3px;
+}
+
+#mode .lbl {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(210, 225, 255, 0.7);
+  margin-left: 3px;
+}
+
+/* 右上のミニマップ */
+#minimap {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 108px;
+  height: 108px;
+  z-index: 3;
+  border-radius: 12px;
+  border: 1px solid rgba(160, 190, 255, 0.18);
+  background: rgba(8, 12, 30, 0.4);
+  touch-action: none;
+  cursor: crosshair;
 }
 
 #mode .dot1 {

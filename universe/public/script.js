@@ -63,7 +63,9 @@ document.body.appendChild(paletteEl);
 const modeBtn = document.createElement("button");
 modeBtn.id = "mode";
 modeBtn.title = SOLO ? "みんなの宇宙へ" : "ひとりの宇宙へ";
-modeBtn.innerHTML = SOLO ? '<span class="dot1"></span>' : '<span class="dot1"></span><span class="dot1"></span>';
+modeBtn.innerHTML = SOLO
+  ? '<span class="dot1"></span><span class="lbl">ひとり</span>'
+  : '<span class="dot1"></span><span class="dot1"></span><span class="lbl">みんな</span>';
 modeBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
   location.href = SOLO ? location.pathname : location.pathname + "?solo";
@@ -85,6 +87,8 @@ help.innerHTML = `
   <p>自分の星をタップ — 消える</p>
   <p>ピンチ / ホイール — ズーム</p>
   <p>下の点 — 自分の色</p>
+  <p>右上の地図 — 触れた場所へ光を送る</p>
+  <p>右下 — ひとりの宇宙と切り替え</p>
   <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。星は24時間で消える"}</p>
 `;
 helpBtn.addEventListener("pointerdown", (e) => {
@@ -96,6 +100,31 @@ document.body.appendChild(help);
 if (!localStorage.getItem("uchu-seen")) {
   help.classList.add("open");
 }
+
+// --- 右上のちいさな地図 ---
+const MAP = 108;
+const map = document.createElement("canvas");
+map.id = "minimap";
+map.width = MAP * DPR;
+map.height = MAP * DPR;
+const mctx = map.getContext("2d");
+mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+document.body.appendChild(map);
+let mapBounds = { x0: 0, y0: 0, s: 1 };
+let mapDrag = false;
+let freeCam = false;
+
+function mapToWorld(mx, my) {
+  const { x0, y0, s } = mapBounds;
+  return [x0 + (mx / MAP) * s, y0 + (my / MAP) * s];
+}
+map.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  mapDrag = true;
+  const [wx, wy] = mapToWorld(e.offsetX, e.offsetY);
+  target = { x: wx, y: wy };
+  freeCam = false;
+});
 
 function resize() {
   W = innerWidth;
@@ -216,7 +245,7 @@ function autopilot(t) {
 // --- ジェスチャー ---
 const pointers = new Map();
 let pinch = null;
-let downAt = 0, downX = 0, downY = 0;
+let downAt = 0, downX = 0, downY = 0, downTarget = null;
 
 function mid(a, b) {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -226,6 +255,8 @@ function dist2(a, b) {
 }
 
 addEventListener("pointerdown", (e) => {
+  downTarget = e.target;
+  if (e.target !== canvas) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
@@ -245,6 +276,12 @@ addEventListener("pointerdown", (e) => {
 });
 
 addEventListener("pointermove", (e) => {
+  if (mapDrag) {
+    const r = map.getBoundingClientRect();
+    const [wx, wy] = mapToWorld(e.clientX - r.left, e.clientY - r.top);
+    target = { x: wx, y: wy };
+    return;
+  }
   const p = pointers.get(e.pointerId);
   if (p) {
     p.x = e.clientX;
@@ -253,20 +290,25 @@ addEventListener("pointermove", (e) => {
   if (pinch && pointers.size >= 2) {
     const [a, b] = [...pointers.values()];
     const m = mid(a, b);
-    cam.z = Math.min(8, Math.max(0.5, pinch.z0 * (dist2(a, b) / pinch.d0)));
+    cam.z = Math.min(100, Math.max(0.05, pinch.z0 * (dist2(a, b) / pinch.d0)));
     cam.cx = pinch.wx - (m.x - W / 2) / scalePx();
     cam.cy = pinch.wy - (m.y - H / 2) / scalePx();
+    freeCam = true;
     return;
   }
-  if (pointers.size <= 1) target = { x: s2w(e.clientX, e.clientY)[0], y: s2w(e.clientX, e.clientY)[1] };
+  if (pointers.size <= 1) {
+    target = { x: s2w(e.clientX, e.clientY)[0], y: s2w(e.clientX, e.clientY)[1] };
+    freeCam = false;
+  }
 });
 
 addEventListener("pointerup", (e) => {
   const wasPinch = pinch !== null;
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
+  mapDrag = false;
   if (wasPinch || pointers.size > 0) return;
-  if (e.target.closest && (e.target.closest("#palette") || e.target.closest("#helpbtn") || e.target.closest("#mode") || e.target.closest("#help"))) return;
+  if (downTarget !== canvas) return;
 
   const held = performance.now() - downAt;
   const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
@@ -280,16 +322,19 @@ addEventListener("pointerup", (e) => {
 addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
+  mapDrag = false;
 });
 
 addEventListener(
   "wheel",
   (e) => {
+    if (e.target !== canvas) return;
     e.preventDefault();
     const [wx, wy] = s2w(e.clientX, e.clientY);
-    cam.z = Math.min(8, Math.max(0.5, cam.z * Math.exp(-e.deltaY * 0.0012)));
+    cam.z = Math.min(100, Math.max(0.05, cam.z * Math.exp(-e.deltaY * 0.0012)));
     cam.cx = wx - (e.clientX - W / 2) / scalePx();
     cam.cy = wy - (e.clientY - H / 2) / scalePx();
+    freeCam = true;
   },
   { passive: false }
 );
@@ -396,6 +441,71 @@ function drawFixedStar(s, wx, wy, t) {
   ctx.globalAlpha = 1;
 }
 
+// ミニマップ：世界全体を俯瞰。星・他人・自分・今見ている範囲を描く
+function drawMap() {
+  let x0 = 0, y0 = 0, x1 = 1, y1 = 1;
+  const corners = [s2w(0, 0), s2w(W, 0), s2w(0, H), s2w(W, H)];
+  for (const s of fixed.values()) {
+    if (s.x < x0) x0 = s.x; if (s.x > x1) x1 = s.x;
+    if (s.y < y0) y0 = s.y; if (s.y > y1) y1 = s.y;
+  }
+  for (const p of peers.values()) {
+    if (p.rx < x0) x0 = p.rx; if (p.rx > x1) x1 = p.rx;
+    if (p.ry < y0) y0 = p.ry; if (p.ry > y1) y1 = p.ry;
+  }
+  for (const pt of [...corners, [player.x, player.y]]) {
+    if (pt[0] < x0) x0 = pt[0]; if (pt[0] > x1) x1 = pt[0];
+    if (pt[1] < y0) y0 = pt[1]; if (pt[1] > y1) y1 = pt[1];
+  }
+  const pad = 0.12 * Math.max(x1 - x0, y1 - y0);
+  const s = Math.max(x1 - x0, y1 - y0) + pad * 2;
+  mapBounds = { x0: (x0 + x1) / 2 - s / 2, y0: (y0 + y1) / 2 - s / 2, s };
+  const M = (wx, wy) => [((wx - mapBounds.x0) / s) * MAP, ((wy - mapBounds.y0) / s) * MAP];
+
+  mctx.clearRect(0, 0, MAP, MAP);
+  mctx.fillStyle = "rgba(8, 12, 30, 0.55)";
+  mctx.fillRect(0, 0, MAP, MAP);
+
+  // 灯された星
+  for (const st of fixed.values()) {
+    const [x, y] = M(st.x, st.y);
+    if (x < 0 || x > MAP || y < 0 || y > MAP) continue;
+    const p = PALETTES[st.c % PALETTES.length];
+    mctx.fillStyle = p.core;
+    mctx.globalAlpha = 0.85;
+    mctx.fillRect(x - 0.75, y - 0.75, 1.5, 1.5);
+  }
+  // 他の光
+  mctx.fillStyle = PEER_COLOR.core;
+  for (const p of peers.values()) {
+    const [x, y] = M(p.rx, p.ry);
+    mctx.globalAlpha = 0.9;
+    mctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  }
+  // 今見ている範囲
+  mctx.globalAlpha = 1;
+  mctx.strokeStyle = "rgba(200, 215, 255, 0.35)";
+  mctx.lineWidth = 0.8;
+  mctx.beginPath();
+  corners.forEach(([vx, vy], i) => {
+    const [x, y] = M(vx, vy);
+    i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+  });
+  mctx.closePath();
+  mctx.stroke();
+  // 自分
+  const [px, py] = M(player.x, player.y);
+  const pal = PALETTES[myColor];
+  mctx.fillStyle = pal.core;
+  mctx.shadowColor = `rgb(${pal.glow.join(",")})`;
+  mctx.shadowBlur = 5;
+  mctx.beginPath();
+  mctx.arc(px, py, 2.2, 0, Math.PI * 2);
+  mctx.fill();
+  mctx.shadowBlur = 0;
+  mctx.globalAlpha = 1;
+}
+
 function frame(t) {
   requestAnimationFrame(frame);
   const dt = Math.min((t - t0) / 16.7, 3) || 1;
@@ -413,13 +523,15 @@ function frame(t) {
   player.x += player.vx * dt;
   player.y += player.vy * dt;
 
-  // 自分の光が画面端に行きそうならカメラが寄り添う
+  // 自分の光が画面端に行きそうならカメラが寄り添う（ズーム/地図操作中は解除）
   const [psx, psy] = w2s(player.x, player.y);
-  const mx = W * 0.22, my = H * 0.22;
-  if (psx < mx) cam.cx -= (mx - psx) / scalePx();
-  if (psx > W - mx) cam.cx += (psx - (W - mx)) / scalePx();
-  if (psy < my) cam.cy -= (my - psy) / scalePx();
-  if (psy > H - my) cam.cy += (psy - (H - my)) / scalePx();
+  if (!freeCam) {
+    const mx = W * 0.22, my = H * 0.22;
+    if (psx < mx) cam.cx -= (mx - psx) / scalePx();
+    if (psx > W - mx) cam.cx += (psx - (W - mx)) / scalePx();
+    if (psy < my) cam.cy -= (my - psy) / scalePx();
+    if (psy > H - my) cam.cy += (psy - (H - my)) / scalePx();
+  }
 
   if (t - lastSend > 80) {
     lastSend = t;
@@ -572,5 +684,7 @@ function frame(t) {
   ctx.beginPath();
   ctx.arc(ppsx, ppsy, 2.6 * dotScale(), 0, Math.PI * 2);
   ctx.fill();
+
+  drawMap();
 }
 requestAnimationFrame(frame);
