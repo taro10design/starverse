@@ -59,6 +59,41 @@ body {
   transform: scale(1.15);
 }
 
+/* 左下のツール群 */
+#tools {
+  position: fixed;
+  left: 22px;
+  bottom: 22px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+}
+
+.tool {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(200, 215, 255, 0.14);
+  color: rgba(210, 225, 255, 0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
+}
+
+.tool svg {
+  width: 15px;
+  height: 15px;
+}
+
+.tool.on {
+  background: rgba(200, 215, 255, 0.3);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(180, 200, 255, 0.45);
+}
+
 /* 左下「?」と右下モード切替 */
 #helpbtn,
 #mode {
@@ -83,6 +118,7 @@ body {
 
 #helpbtn {
   left: 22px;
+  bottom: 64px;
 }
 
 #mode {

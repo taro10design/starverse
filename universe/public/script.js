@@ -72,6 +72,31 @@ modeBtn.addEventListener("pointerdown", (e) => {
 });
 document.body.appendChild(modeBtn);
 
+// --- モード切替（光・星・線） ---
+let tool = "move";
+const toolsEl = document.createElement("div");
+toolsEl.id = "tools";
+const TOOL_SVG = {
+  move: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="M12 3 L14.2 9.8 L21 12 L14.2 14.2 L12 21 L9.8 14.2 L3 12 L9.8 9.8 Z" fill="currentColor"/></svg>',
+  line: '<svg viewBox="0 0 24 24"><path d="M4 20 L20 4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="4" cy="20" r="2.4" fill="currentColor"/><circle cx="20" cy="4" r="2.4" fill="currentColor"/></svg>',
+};
+const TOOL_TIPS = { move: "光を動かす", star: "星を置く", line: "線を引く" };
+for (const name of ["move", "star", "line"]) {
+  const b = document.createElement("button");
+  b.className = "tool" + (name === tool ? " on" : "");
+  b.innerHTML = TOOL_SVG[name];
+  b.title = TOOL_TIPS[name];
+  b.setAttribute("aria-label", TOOL_TIPS[name]);
+  b.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    tool = name;
+    toolsEl.querySelectorAll(".tool").forEach((el) => el.classList.toggle("on", el === b));
+  });
+  toolsEl.appendChild(b);
+}
+document.body.appendChild(toolsEl);
+
 // --- 説明パネル ---
 const helpBtn = document.createElement("button");
 helpBtn.id = "helpbtn";
@@ -79,18 +104,17 @@ helpBtn.textContent = "?";
 const help = document.createElement("div");
 help.id = "help";
 help.innerHTML = `
-  <p>動かす — 光がついてくる</p>
-  <p>タップ — 光の波</p>
-  <p>長押し — 星を灯す</p>
+  <p>左下 — モードを切り替える</p>
+  <p class="dim">● 光：タップで波、動かすとついてくる。自分の星タップで消える</p>
+  <p class="dim">✦ 星：タップで置く、なぞると連続で置ける</p>
+  <p class="dim">─ 線：星から星へなぞって自分で線を引く</p>
   <p>近くの星どうし — 線がつながって星座に</p>
-  <p>星から星へ長押しで引っぱる — 自分で線を引く</p>
   <p>すごく近い2つ — 連星になって回る</p>
-  <p>自分の星をタップ — 消える</p>
   <p>ピンチ / ホイール — ズーム</p>
   <p>下の点 — 自分の色</p>
   <p>右上の地図 — 触れた場所へ光を送る</p>
   <p>右下 — ひとりの宇宙と切り替え</p>
-  <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。星は24時間で消える"}</p>
+  <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。星と線は24時間で消える"}</p>
 `;
 helpBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
@@ -257,7 +281,7 @@ function autopilot(t) {
 const pointers = new Map();
 let pinch = null;
 let downAt = 0, downX = 0, downY = 0, downTarget = null;
-let pendingStar = null, linkTimer = 0, linking = null, linkTip = null;
+let linking = null, linkTip = null, lastPlaced = null;
 
 // 画面上の点に一番近い星を返す（hit px 以内）
 function starAt(sx, sy, hit = 18, exclude = null) {
@@ -306,20 +330,32 @@ addEventListener("pointerdown", (e) => {
     return;
   }
   const [wx, wy] = s2w(e.clientX, e.clientY);
-  target = { x: wx, y: wy };
   downAt = performance.now();
   downX = e.clientX;
   downY = e.clientY;
-  pendingStar = starAt(e.clientX, e.clientY);
-  if (pendingStar) {
-    linkTimer = setTimeout(() => {
-      if (pointers.size === 1 && pendingStar) linking = pendingStar;
-    }, 400);
-  }
   pulses.push({ x: wx, y: wy, r: 0, life: 1, col: PALETTES[myColor].glow });
   send({ t: "pulse", x: wx, y: wy, c: myColor });
   ping();
   haptic();
+  if (tool === "move") {
+    target = { x: wx, y: wy };
+  } else if (tool === "star") {
+    const s = starAt(e.clientX, e.clientY);
+    if (s && (s.by === myId || s.by === "me")) {
+      unstarAt(e.clientX, e.clientY); // 自分の星の上なら消す
+    } else {
+      placeStar(wx, wy);
+      lastPlaced = [e.clientX, e.clientY];
+    }
+  } else if (tool === "line") {
+    const s = starAt(e.clientX, e.clientY);
+    if (s) {
+      linking = s;
+      linkTip = [wx, wy];
+    } else {
+      target = { x: wx, y: wy }; // 空を掴んだら普通に動く
+    }
+  }
 });
 
 addEventListener("pointermove", (e) => {
@@ -332,10 +368,6 @@ addEventListener("pointermove", (e) => {
   if (linking) {
     linkTip = s2w(e.clientX, e.clientY);
     return;
-  }
-  if (pendingStar && Math.hypot(e.clientX - downX, e.clientY - downY) > 14) {
-    pendingStar = null; // 星から動き出した＝長押しリンクではない
-    clearTimeout(linkTimer);
   }
   const p = pointers.get(e.pointerId);
   if (p) {
@@ -351,6 +383,14 @@ addEventListener("pointermove", (e) => {
     freeCam = true;
     return;
   }
+  if (tool === "star" && p) {
+    // なぞった軌道に沿って連続で星を置く
+    if (lastPlaced && Math.hypot(e.clientX - lastPlaced[0], e.clientY - lastPlaced[1]) > 10) {
+      placeStar(...s2w(e.clientX, e.clientY));
+      lastPlaced = [e.clientX, e.clientY];
+    }
+    return;
+  }
   if (pointers.size <= 1) {
     target = { x: s2w(e.clientX, e.clientY)[0], y: s2w(e.clientX, e.clientY)[1] };
     freeCam = false;
@@ -362,34 +402,26 @@ addEventListener("pointerup", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
-  clearTimeout(linkTimer);
   if (linking) {
     const b = starAt(e.clientX, e.clientY, 22, linking.id);
     if (b) addLink(linking.id, b.id);
     linking = null;
-    pendingStar = null;
     linkTip = null;
     return;
   }
-  pendingStar = null;
+  lastPlaced = null;
   if (wasPinch || pointers.size > 0) return;
   if (downTarget !== canvas) return;
 
-  const held = performance.now() - downAt;
   const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
   if (moved > 12) return;
-  if (held >= 400) {
-    placeStar(...s2w(e.clientX, e.clientY));
-  } else {
-    unstarAt(e.clientX, e.clientY);
-  }
+  if (tool === "move") unstarAt(e.clientX, e.clientY); // 自分の星をタップで消す
 });
 addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
-  clearTimeout(linkTimer);
-  linking = pendingStar = linkTip = null;
+  linking = linkTip = lastPlaced = null;
 });
 
 addEventListener(
