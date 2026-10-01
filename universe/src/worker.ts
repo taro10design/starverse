@@ -87,19 +87,21 @@ export class Universe {
       } else if (data.t === "star") {
         this.placeStar(ws, meta, data);
       } else if (data.t === "unstar") {
-        this.removeStar(ws, meta, String(data.id));
+        this.removeStar(ws, meta, String(data.id), typeof data.uid === "string" ? data.uid : "");
       } else if (data.t === "link") {
-        this.addLink(ws, meta, String(data.a), String(data.b));
+        this.addLink(ws, meta, String(data.a), String(data.b), typeof data.uid === "string" ? data.uid : "");
       } else if (data.t === "unlink") {
-        this.removeLink(ws, meta, String(data.id));
+        this.removeLink(ws, meta, String(data.id), typeof data.uid === "string" ? data.uid : "");
       }
     } catch {}
   }
 
-  private placeStar(ws: WebSocket, meta: Session, data: { id: string; x: number; y: number }) {
+  private placeStar(ws: WebSocket, meta: Session, data: { id: string; x: number; y: number; uid?: string }) {
     this.prune();
+    // 持ち主はブラウザ固有のuid（セッションではなく端末が主語）
+    const owner = typeof data.uid === "string" && data.uid ? data.uid.slice(0, 40) : meta.id;
     let mine = 0;
-    for (const s of this.stars.values()) if (s.by === meta.id) mine++;
+    for (const s of this.stars.values()) if (s.by === owner) mine++;
     if (this.stars.size >= MAX_STARS || mine >= MAX_STARS_PER_USER) return;
 
     const star: FixedStar = {
@@ -107,7 +109,7 @@ export class Universe {
       x: data.x,
       y: data.y,
       c: meta.c,
-      by: meta.id,
+      by: owner,
       ts: Date.now(),
     };
     this.stars.set(star.id, star);
@@ -115,9 +117,9 @@ export class Universe {
     this.broadcast(ws, { t: "star", ...star });
   }
 
-  private removeStar(ws: WebSocket, meta: Session, starId: string) {
+  private removeStar(ws: WebSocket, meta: Session, starId: string, uid: string) {
     const s = this.stars.get(starId);
-    if (!s || s.by !== meta.id) return; // 自分の星しか消せない
+    if (!s || !uid || s.by !== uid) return; // 自分の星しか消せない
     this.stars.delete(s.id);
     this.ctx.waitUntil(this.ctx.storage.put("stars", [...this.stars.values()]));
     this.broadcast(ws, { t: "unstar", id: s.id });
@@ -131,25 +133,26 @@ export class Universe {
     this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
   }
 
-  private addLink(ws: WebSocket, meta: Session, a: string, b: string) {
+  private addLink(ws: WebSocket, meta: Session, a: string, b: string, uid: string) {
     if (a === b || !this.stars.has(a) || !this.stars.has(b)) return;
     for (const l of this.links.values()) {
       if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return; // 同じ線は一本
     }
     this.prune();
+    const owner = uid ? uid.slice(0, 40) : meta.id;
     let mine = 0;
-    for (const l of this.links.values()) if (l.by === meta.id) mine++;
+    for (const l of this.links.values()) if (l.by === owner) mine++;
     if (this.links.size >= MAX_LINKS || mine >= MAX_LINKS_PER_USER) return;
 
-    const link: Link = { id: crypto.randomUUID().slice(0, 12), a, b, by: meta.id, ts: Date.now() };
+    const link: Link = { id: crypto.randomUUID().slice(0, 12), a, b, by: owner, ts: Date.now() };
     this.links.set(link.id, link);
     this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
     this.broadcast(ws, { t: "link", ...link });
   }
 
-  private removeLink(ws: WebSocket, meta: Session, linkId: string) {
+  private removeLink(ws: WebSocket, meta: Session, linkId: string, uid: string) {
     const l = this.links.get(linkId);
-    if (!l || l.by !== meta.id) return;
+    if (!l || !uid || l.by !== uid) return;
     this.links.delete(linkId);
     this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
     this.broadcast(ws, { t: "unlink", id: linkId });

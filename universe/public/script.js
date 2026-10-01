@@ -37,6 +37,17 @@ const PALETTES = [
   { core: "#ffe0ee", glow: [255, 120, 180] }, // 桃
 ];
 const PEER_COLOR = { core: "#dfe9ff", glow: [160, 190, 255] };
+
+// このブラウザ固有の持ち主ID（リロードしても自分の星は自分のもの）
+let MY_UID = localStorage.getItem("uchu-uid");
+if (!MY_UID) {
+  MY_UID = crypto.randomUUID();
+  localStorage.setItem("uchu-uid", MY_UID);
+}
+function isMine(s) {
+  return s.by === MY_UID || s.by === "me" || s.by === myId;
+}
+
 let myColor = Math.min(+(localStorage.getItem("uchu-color") || 0), PALETTES.length - 1);
 
 const paletteEl = document.createElement("div");
@@ -315,10 +326,10 @@ function addLink(a, b) {
   for (const l of links.values()) {
     if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return;
   }
-  const l = { id: crypto.randomUUID().slice(0, 12), a, b, by: myId || "me", ts: Date.now() };
+  const l = { id: crypto.randomUUID().slice(0, 12), a, b, by: MY_UID, ts: Date.now() };
   links.set(l.id, l);
   soloSave();
-  send({ t: "link", a, b });
+  send({ t: "link", a, b, uid: MY_UID });
   ping();
 }
 
@@ -351,7 +362,7 @@ addEventListener("pointerdown", (e) => {
     target = { x: wx, y: wy };
   } else if (tool === "star") {
     const s = starAt(e.clientX, e.clientY);
-    if (s && (s.by === myId || s.by === "me")) {
+    if (s && isMine(s)) {
       unstarAt(e.clientX, e.clientY); // 自分の星の上なら消す
     } else {
       placeStar(wx, wy);
@@ -466,31 +477,31 @@ addEventListener("pointerdown", (e) => {
 });
 
 function placeStar(nx, ny) {
-  const s = { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: myColor, by: myId || "me", ts: Date.now() };
+  const s = { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: myColor, by: MY_UID, ts: Date.now() };
   fixed.set(s.id, s);
   pairsDirty = true;
   soloSave();
-  send({ t: "star", id: s.id, x: s.x, y: s.y });
+  send({ t: "star", id: s.id, x: s.x, y: s.y, uid: MY_UID });
 }
 function deleteStar(s) {
   fixed.delete(s.id);
   dropLinksTouching(s.id);
   pairsDirty = true;
   soloSave();
-  send({ t: "unstar", id: s.id });
+  send({ t: "unstar", id: s.id, uid: MY_UID });
 }
 function unstarAt(x, y) {
   const s = starAt(x, y, 20);
-  if (s && (s.by === myId || s.by === "me")) deleteStar(s);
+  if (s && isMine(s)) deleteStar(s);
 }
 function eraseAt(x, y) {
   const s = starAt(x, y, 16);
-  if (s && (s.by === myId || s.by === "me")) deleteStar(s);
+  if (s && isMine(s)) deleteStar(s);
 }
 function clearMine() {
   let n = 0;
   for (const s of [...fixed.values()]) {
-    if (s.by === myId || s.by === "me") {
+    if (isMine(s)) {
       deleteStar(s);
       n++;
     }
