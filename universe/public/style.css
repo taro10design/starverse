@@ -88,6 +88,10 @@ body {
   height: 15px;
 }
 
+.tool.dim {
+  opacity: 0.3;
+}
+
 .tool.on {
   background: rgba(200, 215, 255, 0.3);
   color: #fff;

@@ -105,7 +105,7 @@ export class Universe {
           this.broadcast(null, { t: "admire", id: s.id, ts: s.ts });
         }
       } else if (data.t === "link") {
-        this.addLink(ws, meta, String(data.a), String(data.b), typeof data.uid === "string" ? data.uid : "");
+        this.addLink(ws, meta, String(data.a), String(data.b), typeof data.uid === "string" ? data.uid : "", typeof data.id === "string" ? data.id : "");
       } else if (data.t === "unlink") {
         this.removeLink(ws, meta, String(data.id), typeof data.uid === "string" ? data.uid : "");
       }
@@ -149,10 +149,10 @@ export class Universe {
     this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
   }
 
-  private addLink(ws: WebSocket, meta: Session, a: string, b: string, uid: string) {
+  private addLink(ws: WebSocket, meta: Session, a: string, b: string, uid: string, id: string) {
     if (a === b || !this.stars.has(a) || !this.stars.has(b)) return;
     for (const l of this.links.values()) {
-      if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return; // 同じ線は一本
+      if ((l.a === a && l.b === b) || (l.a === b && l.b === a) || l.id === id) return; // 同じ線は一本
     }
     this.prune();
     const owner = uid ? uid.slice(0, 40) : meta.id;
@@ -160,7 +160,7 @@ export class Universe {
     for (const l of this.links.values()) if (l.by === owner) mine++;
     if (this.links.size >= MAX_LINKS || mine >= MAX_LINKS_PER_USER) return;
 
-    const link: Link = { id: crypto.randomUUID().slice(0, 12), a, b, by: owner, ts: Date.now() };
+    const link: Link = { id: id ? id.slice(0, 24) : crypto.randomUUID().slice(0, 12), a, b, by: owner, ts: Date.now() };
     this.links.set(link.id, link);
     this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
     this.broadcast(ws, { t: "link", ...link });

@@ -116,7 +116,67 @@ for (const name of ["move", "star", "line", "erase", "ghost"]) {
   });
   toolsEl.appendChild(b);
 }
+
+// --- アンドゥ / リドゥ ---
+const undoStack = [];
+const redoStack = [];
+const snap = (s) => ({ id: s.id, x: s.x, y: s.y, c: s.c });
+function pushOp(op) {
+  undoStack.push(op);
+  if (undoStack.length > 200) undoStack.shift();
+  redoStack.length = 0;
+  histUI();
+}
+function histUI() {
+  undoB.classList.toggle("dim", !undoStack.length);
+  redoB.classList.toggle("dim", !redoStack.length);
+}
+function doUndo() {
+  const op = undoStack.pop();
+  if (!op) return;
+  op.undo();
+  redoStack.push(op);
+  histUI();
+}
+function doRedo() {
+  const op = redoStack.pop();
+  if (!op) return;
+  op.redo();
+  undoStack.push(op);
+  histUI();
+}
+const undoB = document.createElement("button");
+undoB.className = "tool hist dim";
+undoB.style.marginLeft = "10px";
+undoB.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5 L3 9.5 L8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 9.5 L14 9.5 A6 6 0 0 1 14 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+undoB.title = "もどす (Ctrl+Z)";
+undoB.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  doUndo();
+});
+toolsEl.appendChild(undoB);
+const redoB = document.createElement("button");
+redoB.className = "tool hist dim";
+redoB.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 5 L21 9.5 L16 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9.5 L10 9.5 A6 6 0 0 0 10 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+redoB.title = "やりなおす (Ctrl+Y)";
+redoB.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  doRedo();
+});
+toolsEl.appendChild(redoB);
 document.body.appendChild(toolsEl);
+
+addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === "z") {
+    e.preventDefault();
+    e.shiftKey ? doRedo() : doUndo();
+  } else if (k === "y") {
+    e.preventDefault();
+    doRedo();
+  }
+});
 
 // --- 説明パネル ---
 const helpBtn = document.createElement("button");
@@ -172,12 +232,16 @@ keyBtn.addEventListener("pointerdown", (e) => {
 const reviveBtn = help.querySelector("#revivebtn");
 reviveBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
-  let n = 0;
-  for (const g of [...ghosts.values()]) {
-    revive(g, true);
-    n++;
+  const gs = [...ghosts.values()].map((g) => ({ ...g }));
+  for (const g of gs) revive(g, true);
+  const n = gs.length;
+  if (n) {
+    haptic();
+    pushOp({
+      undo: () => gs.forEach((g) => { const s = fixed.get(g.id); if (s) deleteStar(s); }),
+      redo: () => gs.forEach((g) => { ghosts.delete(g.id); ghostsSave(); placeStar(g.x, g.y, g); }),
+    });
   }
-  if (n) haptic();
   reviveBtn.textContent = n ? `${n}個復活した` : "幽霊がいない";
   setTimeout(() => (reviveBtn.textContent = "幽霊を全部復活"), 1500);
 });
@@ -412,6 +476,41 @@ const pointers = new Map();
 let pinch = null;
 let downAt = 0, downX = 0, downY = 0, downTarget = null;
 let linking = null, linkTip = null, lastPlaced = null, erasing = false, ghosting = false;
+let placeBatch = null, eraseBatch = null, forgetBatch = null;
+
+// ドラッグ中の連続操作を一つの履歴として束ねる
+function finalizeBatches() {
+  if (placeBatch) {
+    const list = placeBatch;
+    placeBatch = null;
+    if (list.length) {
+      pushOp({
+        undo: () => list.forEach((st) => { const s = fixed.get(st.id); if (s) deleteStar(s, true); }),
+        redo: () => list.forEach((st) => placeStar(st.x, st.y, st)),
+      });
+    }
+  }
+  if (eraseBatch) {
+    const list = eraseBatch;
+    eraseBatch = null;
+    if (list.length) {
+      pushOp({
+        undo: () => list.forEach((st) => placeStar(st.x, st.y, st)),
+        redo: () => list.forEach((st) => { const s = fixed.get(st.id); if (s) deleteStar(s); }),
+      });
+    }
+  }
+  if (forgetBatch) {
+    const list = forgetBatch;
+    forgetBatch = null;
+    if (list.length) {
+      pushOp({
+        undo: () => { list.forEach((g) => ghosts.set(g.id, g)); ghostsSave(); },
+        redo: () => { list.forEach((g) => ghosts.delete(g.id)); ghostsSave(); },
+      });
+    }
+  }
+}
 
 // 画面上の点に一番近い星を返す（hit px 以内）
 function starAt(sx, sy, hit = 18, exclude = null) {
@@ -438,8 +537,9 @@ function addLink(a, b) {
   const l = { id: crypto.randomUUID().slice(0, 12), a, b, by: MY_UID, ts: Date.now() };
   links.set(l.id, l);
   soloSave();
-  send({ t: "link", a, b, uid: MY_UID });
+  send({ t: "link", id: l.id, a, b, uid: MY_UID });
   ping();
+  return l;
 }
 
 function mid(a, b) {
@@ -472,11 +572,13 @@ addEventListener("pointerdown", (e) => {
   } else if (tool === "star") {
     const s = starAt(e.clientX, e.clientY);
     if (s && isMine(s)) {
-      unstarAt(e.clientX, e.clientY); // 自分の星の上なら消す
+      const d = unstarAt(e.clientX, e.clientY); // 自分の星の上なら消す
+      if (d) pushOp({ undo: () => placeStar(d.x, d.y, snap(d)), redo: () => { const c = fixed.get(d.id); if (c) deleteStar(c); } });
     } else if (s) {
       admire(s); // 他人の星に触れたらきらめきを送る
     } else {
-      placeStar(wx, wy);
+      const ns = placeStar(wx, wy);
+      placeBatch = [snap(ns)];
       lastPlaced = [e.clientX, e.clientY];
     }
   } else if (tool === "line") {
@@ -489,10 +591,14 @@ addEventListener("pointerdown", (e) => {
     }
   } else if (tool === "erase") {
     erasing = true;
-    eraseAt(e.clientX, e.clientY);
+    eraseBatch = [];
+    const d = eraseAt(e.clientX, e.clientY);
+    if (d) eraseBatch.push(snap(d));
   } else if (tool === "ghost") {
     ghosting = true;
-    forgetAt(e.clientX, e.clientY);
+    forgetBatch = [];
+    const g = forgetAt(e.clientX, e.clientY);
+    if (g) forgetBatch.push({ ...g });
   }
 });
 
@@ -522,17 +628,20 @@ addEventListener("pointermove", (e) => {
     return;
   }
   if (erasing && p) {
-    eraseAt(e.clientX, e.clientY); // なぞった星を消していく
+    const d = eraseAt(e.clientX, e.clientY); // なぞった星を消していく
+    if (d && eraseBatch) eraseBatch.push(snap(d));
     return;
   }
   if (ghosting && p) {
-    forgetAt(e.clientX, e.clientY); // なぞった幽霊を忘れていく
+    const g = forgetAt(e.clientX, e.clientY); // なぞった幽霊を忘れていく
+    if (g && forgetBatch) forgetBatch.push({ ...g });
     return;
   }
   if (tool === "star" && p) {
     // なぞった軌道に沿って連続で星を置く
     if (lastPlaced && Math.hypot(e.clientX - lastPlaced[0], e.clientY - lastPlaced[1]) > 10) {
-      placeStar(...s2w(e.clientX, e.clientY));
+      const ns = placeStar(...s2w(e.clientX, e.clientY));
+      if (placeBatch) placeBatch.push(snap(ns));
       lastPlaced = [e.clientX, e.clientY];
     }
     return;
@@ -550,11 +659,20 @@ addEventListener("pointerup", (e) => {
   mapDrag = false;
   if (linking) {
     const b = starAt(e.clientX, e.clientY, 22, linking.id);
-    if (b) addLink(linking.id, b.id);
+    if (b) {
+      const l = addLink(linking.id, b.id);
+      if (l) {
+        pushOp({
+          undo: () => { links.delete(l.id); soloSave(); send({ t: "unlink", id: l.id, uid: MY_UID }); },
+          redo: () => { links.set(l.id, l); soloSave(); send({ t: "link", id: l.id, a: l.a, b: l.b, uid: MY_UID }); },
+        });
+      }
+    }
     linking = null;
     linkTip = null;
     return;
   }
+  finalizeBatches();
   lastPlaced = null;
   erasing = ghosting = false;
   if (wasPinch || pointers.size > 0) return;
@@ -565,11 +683,23 @@ addEventListener("pointerup", (e) => {
   if (tool === "move") {
     const s = starAt(e.clientX, e.clientY, 20);
     if (s) {
-      if (isMine(s)) deleteStar(s); // 自分の星をタップで消す
-      else admire(s); // 他人の星をタップできらめき
+      if (isMine(s)) {
+        const d = { ...s };
+        deleteStar(s); // 自分の星をタップで消す
+        pushOp({ undo: () => placeStar(d.x, d.y, d), redo: () => { const c = fixed.get(d.id); if (c) deleteStar(c); } });
+      } else {
+        admire(s); // 他人の星をタップできらめき
+      }
     } else {
       const g = ghostAt(e.clientX, e.clientY);
-      if (g) revive(g); // 消えた自分の星はタップで復活
+      if (g) {
+        const gg = { ...g };
+        revive(g); // 消えた自分の星はタップで復活
+        pushOp({
+          undo: () => { const s = fixed.get(gg.id); if (s) deleteStar(s); }, // 幽霊に戻す
+          redo: () => { ghosts.delete(gg.id); ghostsSave(); placeStar(gg.x, gg.y, gg); },
+        });
+      }
     }
   }
 });
@@ -577,6 +707,7 @@ addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
+  finalizeBatches();
   linking = linkTip = lastPlaced = null;
   erasing = ghosting = false;
 });
@@ -611,6 +742,7 @@ function placeStar(nx, ny, g) {
   pairsDirty = true;
   soloSave();
   send({ t: "star", id: s.id, x: s.x, y: s.y, uid: MY_UID });
+  return s;
 }
 function ghostAt(sx, sy, hit = 20) {
   const [wx, wy] = s2w(sx, sy);
@@ -631,8 +763,8 @@ function revive(g, quiet) {
     haptic();
   }
 }
-function deleteStar(s) {
-  if (s.by === MY_UID) {
+function deleteStar(s, noGhost) {
+  if (s.by === MY_UID && !noGhost) {
     ghosts.set(s.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: Date.now() });
     ghostsSave();
   }
@@ -644,18 +776,28 @@ function deleteStar(s) {
 }
 function unstarAt(x, y) {
   const s = starAt(x, y, 20);
-  if (s && isMine(s)) deleteStar(s);
+  if (s && isMine(s)) {
+    deleteStar(s);
+    return s;
+  }
+  return null;
 }
 function eraseAt(x, y) {
   const s = starAt(x, y, 16);
-  if (s) deleteStar(s); // 消モードは誰の星でも消せる
+  if (s) {
+    deleteStar(s); // 消モードは誰の星でも消せる
+    return s;
+  }
+  return null;
 }
 function forgetAt(x, y) {
   const g = ghostAt(x, y, 18);
   if (g) {
     ghosts.delete(g.id);
     ghostsSave();
+    return g;
   }
+  return null;
 }
 function forgetAll() {
   if (!ghosts.size) return;
@@ -664,14 +806,20 @@ function forgetAll() {
   haptic();
 }
 function clearMine() {
-  let n = 0;
+  const list = [];
   for (const s of [...fixed.values()]) {
     if (isMine(s)) {
+      list.push(snap(s));
       deleteStar(s);
-      n++;
     }
   }
-  if (n) haptic();
+  if (list.length) {
+    haptic();
+    pushOp({
+      undo: () => list.forEach((st) => placeStar(st.x, st.y, st)),
+      redo: () => list.forEach((st) => { const s = fixed.get(st.id); if (s) deleteStar(s); }),
+    });
+  }
 }
 // 他人の星をタップ＝きらめきを送る。寿命がリセットされる
 function admire(s) {
