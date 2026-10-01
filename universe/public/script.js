@@ -53,10 +53,14 @@ let myId = null;
 let retry = 1500;
 let lastSend = 0;
 
+const WS_HOST = location.hostname.endsWith("workers.dev")
+  ? location.host
+  : "universe.taroooo0w0.workers.dev";
+
 function connect() {
   if (location.protocol === "file:") return;
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${scheme}://${location.host}/ws`);
+  ws = new WebSocket(`${scheme}://${WS_HOST}/ws`);
 
   ws.onopen = () => {
     retry = 1500;
