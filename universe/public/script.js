@@ -126,7 +126,7 @@ help.innerHTML = `
   <p class="dim">✦ 星：タップで置く、なぞると連続で置ける</p>
   <p class="dim">─ 線：星から星へなぞって自分で線を引く</p>
   <p class="dim">⌫ 消：誰の星でも消せる。もう一度押すと自分のが全部消える</p>
-  <p class="dim">消えた自分の星は幽霊として残る。タップで復活</p>
+  <p class="dim">消えた自分の星は幽霊として残る。タップで復活、消モードでなぞると忘れる</p>
   <p>近くの星どうし — 線がつながって星座に</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>ピンチ / ホイール — ズーム</p>
@@ -618,7 +618,15 @@ function unstarAt(x, y) {
 }
 function eraseAt(x, y) {
   const s = starAt(x, y, 16);
-  if (s) deleteStar(s); // 消モードは誰の星でも消せる
+  if (s) {
+    deleteStar(s); // 消モードは誰の星でも消せる
+    return;
+  }
+  const g = ghostAt(x, y, 16);
+  if (g) {
+    ghosts.delete(g.id); // 幽霊をなぞれば忘れる
+    ghostsSave();
+  }
 }
 function clearMine() {
   let n = 0;
@@ -627,6 +635,11 @@ function clearMine() {
       deleteStar(s);
       n++;
     }
+  }
+  if (ghosts.size) {
+    ghosts.clear(); // 一括消去は幽霊ごと忘れる
+    ghostsSave();
+    n++;
   }
   if (n) haptic();
 }
