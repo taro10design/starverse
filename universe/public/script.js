@@ -112,8 +112,8 @@ for (let i = 0; i < STAR_N; i++) {
   stars.push({
     x: Math.random() * W,
     y: Math.random() * H,
-    vx: (Math.random() - 0.5) * 0.06,
-    vy: (Math.random() - 0.5) * 0.06,
+    vx: (Math.random() - 0.5) * 0.14,
+    vy: (Math.random() - 0.5) * 0.14,
     r: 0.4 + Math.random() * 1.4,
     tw: Math.random() * Math.PI * 2,
     tws: 0.008 + Math.random() * 0.02,
@@ -405,7 +405,7 @@ function frame(t) {
   const tgt = target || autopilot(t);
   player.px = player.x;
   player.py = player.y;
-  const k = 0.028 / scalePx();
+  const k = 0.028; // ワールド座標系なので画面サイズで割らない
   player.vx += (tgt.x - player.x) * k * dt;
   player.vy += (tgt.y - player.y) * k * dt;
   player.vx *= Math.pow(0.90, dt);
