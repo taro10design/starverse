@@ -83,6 +83,7 @@ help.innerHTML = `
   <p>タップ — 光の波</p>
   <p>長押し — 星を灯す</p>
   <p>近くの星どうし — 線がつながって星座に</p>
+  <p>星から星へ長押しで引っぱる — 自分で線を引く</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>自分の星をタップ — 消える</p>
   <p>ピンチ / ホイール — ズーム</p>
@@ -154,6 +155,7 @@ for (let i = 0; i < STAR_N; i++) {
 // --- 他の光たち（本物の人間） ---
 const peers = new Map(); // id -> {x,y,rx,ry,c}
 const fixed = new Map(); // id -> FixedStar（ワールド座標）
+const links = new Map(); // id -> {id,a,b,by,ts}　誰かが手で引いた線
 let pairsDirty = true;
 let pairList = [];
 let ws = null;
@@ -180,6 +182,7 @@ function connect() {
       myId = m.id;
       for (const d of m.dots) peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y, c: d.c });
       for (const s of m.stars || []) fixed.set(s.id, s);
+      for (const l of m.links || []) links.set(l.id, l);
       pairsDirty = true;
     } else if (m.t === "p") {
       const p = peers.get(m.id) || { x: m.x, y: m.y, rx: m.x, ry: m.y, c: m.c };
@@ -192,7 +195,12 @@ function connect() {
       pairsDirty = true;
     } else if (m.t === "unstar") {
       fixed.delete(m.id);
+      dropLinksTouching(m.id);
       pairsDirty = true;
+    } else if (m.t === "link") {
+      links.set(m.id, m);
+    } else if (m.t === "unlink") {
+      links.delete(m.id);
     } else if (m.t === "pulse") {
       pulses.push({ x: m.x, y: m.y, r: 0, life: 0.8, col: typeof m.c === "number" ? PALETTES[m.c % PALETTES.length].glow : [255, 230, 200] });
     } else if (m.t === "leave") {
@@ -211,14 +219,17 @@ connect();
 // ソロモード：自分の星はlocalStorageに残る（消えない個人の空）
 function soloLoad() {
   try {
-    for (const s of JSON.parse(localStorage.getItem("uchu-solo-stars") || "[]")) fixed.set(s.id, s);
+    const saved = JSON.parse(localStorage.getItem("uchu-solo") || "null");
+    const arr = saved ? saved.stars : JSON.parse(localStorage.getItem("uchu-solo-stars") || "[]");
+    for (const s of arr || []) fixed.set(s.id, s);
+    for (const l of (saved && saved.links) || []) links.set(l.id, l);
     pairsDirty = true;
   } catch {}
 }
 function soloSave() {
   if (!SOLO) return;
   try {
-    localStorage.setItem("uchu-solo-stars", JSON.stringify([...fixed.values()]));
+    localStorage.setItem("uchu-solo", JSON.stringify({ stars: [...fixed.values()], links: [...links.values()] }));
   } catch {}
 }
 if (SOLO) {
@@ -246,6 +257,36 @@ function autopilot(t) {
 const pointers = new Map();
 let pinch = null;
 let downAt = 0, downX = 0, downY = 0, downTarget = null;
+let pendingStar = null, linkTimer = 0, linking = null, linkTip = null;
+
+// 画面上の点に一番近い星を返す（hit px 以内）
+function starAt(sx, sy, hit = 18, exclude = null) {
+  const [wx, wy] = s2w(sx, sy);
+  const h = hit / scalePx();
+  let best = null, bd = h * h;
+  for (const s of fixed.values()) {
+    if (s.id === exclude) continue;
+    const dx = s.x - wx, dy = s.y - wy, d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = s; }
+  }
+  return best;
+}
+function dropLinksTouching(starId) {
+  for (const [lid, l] of links) {
+    if (l.a === starId || l.b === starId) links.delete(lid);
+  }
+}
+function addLink(a, b) {
+  if (!a || !b || a === b) return;
+  for (const l of links.values()) {
+    if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return;
+  }
+  const l = { id: crypto.randomUUID().slice(0, 12), a, b, by: myId || "me", ts: Date.now() };
+  links.set(l.id, l);
+  soloSave();
+  send({ t: "link", a, b });
+  ping();
+}
 
 function mid(a, b) {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -269,6 +310,12 @@ addEventListener("pointerdown", (e) => {
   downAt = performance.now();
   downX = e.clientX;
   downY = e.clientY;
+  pendingStar = starAt(e.clientX, e.clientY);
+  if (pendingStar) {
+    linkTimer = setTimeout(() => {
+      if (pointers.size === 1 && pendingStar) linking = pendingStar;
+    }, 400);
+  }
   pulses.push({ x: wx, y: wy, r: 0, life: 1, col: PALETTES[myColor].glow });
   send({ t: "pulse", x: wx, y: wy, c: myColor });
   ping();
@@ -281,6 +328,14 @@ addEventListener("pointermove", (e) => {
     const [wx, wy] = mapToWorld(e.clientX - r.left, e.clientY - r.top);
     target = { x: wx, y: wy };
     return;
+  }
+  if (linking) {
+    linkTip = s2w(e.clientX, e.clientY);
+    return;
+  }
+  if (pendingStar && Math.hypot(e.clientX - downX, e.clientY - downY) > 14) {
+    pendingStar = null; // 星から動き出した＝長押しリンクではない
+    clearTimeout(linkTimer);
   }
   const p = pointers.get(e.pointerId);
   if (p) {
@@ -307,6 +362,16 @@ addEventListener("pointerup", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
+  clearTimeout(linkTimer);
+  if (linking) {
+    const b = starAt(e.clientX, e.clientY, 22, linking.id);
+    if (b) addLink(linking.id, b.id);
+    linking = null;
+    pendingStar = null;
+    linkTip = null;
+    return;
+  }
+  pendingStar = null;
   if (wasPinch || pointers.size > 0) return;
   if (downTarget !== canvas) return;
 
@@ -323,6 +388,8 @@ addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
+  clearTimeout(linkTimer);
+  linking = pendingStar = linkTip = null;
 });
 
 addEventListener(
@@ -355,18 +422,13 @@ function placeStar(nx, ny) {
   send({ t: "star", id: s.id, x: s.x, y: s.y });
 }
 function unstarAt(x, y) {
-  const [wx, wy] = s2w(x, y);
-  const hit = 20 / scalePx();
-  for (const s of fixed.values()) {
-    const dx = s.x - wx;
-    const dy = s.y - wy;
-    if (dx * dx + dy * dy < hit * hit && (s.by === myId || s.by === "me")) {
-      fixed.delete(s.id);
-      pairsDirty = true;
-      soloSave();
-      send({ t: "unstar", id: s.id });
-      return;
-    }
+  const s = starAt(x, y, 20);
+  if (s && (s.by === myId || s.by === "me")) {
+    fixed.delete(s.id);
+    dropLinksTouching(s.id);
+    pairsDirty = true;
+    soloSave();
+    send({ t: "unstar", id: s.id });
   }
 }
 
@@ -631,6 +693,7 @@ function frame(t) {
   }
 
   const drawn = new Set();
+  const orbitPos = new Map(); // 連星メンバーの今のワールド座標
   for (const pair of pairList) {
     if (!pair.binary) continue;
     const { a, b } = pair;
@@ -638,13 +701,44 @@ function frame(t) {
     const my = (a.y + b.y) / 2;
     const r = Math.hypot(a.x - b.x, a.y - b.y) / 2 || 0.008;
     const ang = t * 0.0006 + hashPhase(a.id) + hashPhase(b.id);
-    drawFixedStar(a, mx + Math.cos(ang) * r, my + Math.sin(ang) * r, t);
-    drawFixedStar(b, mx - Math.cos(ang) * r, my - Math.sin(ang) * r, t);
+    const ap = [mx + Math.cos(ang) * r, my + Math.sin(ang) * r];
+    const bp = [mx - Math.cos(ang) * r, my - Math.sin(ang) * r];
+    orbitPos.set(a.id, ap);
+    orbitPos.set(b.id, bp);
+    drawFixedStar(a, ap[0], ap[1], t);
+    drawFixedStar(b, bp[0], bp[1], t);
     drawn.add(a.id);
     drawn.add(b.id);
   }
   for (const s of fixed.values()) {
     if (!drawn.has(s.id)) drawFixedStar(s, s.x, s.y, t);
+  }
+
+  // 手で引かれた線（意図の線。自動の星座線より少し明るい）
+  ctx.strokeStyle = "rgba(225, 230, 255, 0.3)";
+  ctx.lineWidth = 1 * dotScale();
+  for (const l of links.values()) {
+    const a = fixed.get(l.a), b = fixed.get(l.b);
+    if (!a || !b) continue;
+    const [ax, ay] = w2s(...(orbitPos.get(l.a) || [a.x, a.y]));
+    const [bx, by] = w2s(...(orbitPos.get(l.b) || [b.x, b.y]));
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+  }
+  // 引き途中の線
+  if (linking && linkTip) {
+    const [ax, ay] = w2s(linking.x, linking.y);
+    const [bx, by] = w2s(linkTip[0], linkTip[1]);
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(235, 240, 255, 0.55)";
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // --- 他の光（実在の誰か、色つき） ---

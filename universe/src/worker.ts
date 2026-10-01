@@ -19,18 +19,32 @@ interface FixedStar {
   ts: number;
 }
 
+// 誰かが意図して引いた線。星aと星bを結ぶ
+interface Link {
+  id: string;
+  a: string;
+  b: string;
+  by: string;
+  ts: number;
+}
+
 const MAX_STARS = 500;
 const MAX_STARS_PER_USER = 64;
+const MAX_LINKS = 600;
+const MAX_LINKS_PER_USER = 96;
 const STAR_TTL = 24 * 60 * 60 * 1000; // 星は一日で消える
 
 // 宇宙という名の部屋。全員がここにいる。
 export class Universe {
   private stars = new Map<string, FixedStar>();
+  private links = new Map<string, Link>();
 
   constructor(private ctx: DurableObjectState) {
     this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get<FixedStar[]>("stars");
       if (saved) for (const s of saved) this.stars.set(s.id, s);
+      const savedLinks = await this.ctx.storage.get<Link[]>("links");
+      if (savedLinks) for (const l of savedLinks) this.links.set(l.id, l);
     });
   }
 
@@ -50,7 +64,7 @@ export class Universe {
       if (meta) dots.push(meta);
     }
     this.prune();
-    server.send(JSON.stringify({ t: "welcome", id, dots, stars: [...this.stars.values()] }));
+    server.send(JSON.stringify({ t: "welcome", id, dots, stars: [...this.stars.values()], links: [...this.links.values()] }));
     this.broadcast(server, { t: "p", id, x: 0.5, y: 0.5, c: 0 });
 
     return new Response(null, { status: 101, webSocket: client });
@@ -74,6 +88,10 @@ export class Universe {
         this.placeStar(ws, meta, data);
       } else if (data.t === "unstar") {
         this.removeStar(ws, meta, String(data.id));
+      } else if (data.t === "link") {
+        this.addLink(ws, meta, String(data.a), String(data.b));
+      } else if (data.t === "unlink") {
+        this.removeLink(ws, meta, String(data.id));
       }
     } catch {}
   }
@@ -103,6 +121,38 @@ export class Universe {
     this.stars.delete(s.id);
     this.ctx.waitUntil(this.ctx.storage.put("stars", [...this.stars.values()]));
     this.broadcast(ws, { t: "unstar", id: s.id });
+    // 端が消えたら線も消える
+    for (const [lid, l] of this.links) {
+      if (l.a === s.id || l.b === s.id) {
+        this.links.delete(lid);
+        this.broadcast(null, { t: "unlink", id: lid });
+      }
+    }
+    this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
+  }
+
+  private addLink(ws: WebSocket, meta: Session, a: string, b: string) {
+    if (a === b || !this.stars.has(a) || !this.stars.has(b)) return;
+    for (const l of this.links.values()) {
+      if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return; // 同じ線は一本
+    }
+    this.prune();
+    let mine = 0;
+    for (const l of this.links.values()) if (l.by === meta.id) mine++;
+    if (this.links.size >= MAX_LINKS || mine >= MAX_LINKS_PER_USER) return;
+
+    const link: Link = { id: crypto.randomUUID().slice(0, 12), a, b, by: meta.id, ts: Date.now() };
+    this.links.set(link.id, link);
+    this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
+    this.broadcast(ws, { t: "link", ...link });
+  }
+
+  private removeLink(ws: WebSocket, meta: Session, linkId: string) {
+    const l = this.links.get(linkId);
+    if (!l || l.by !== meta.id) return;
+    this.links.delete(linkId);
+    this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
+    this.broadcast(ws, { t: "unlink", id: linkId });
   }
 
   private prune() {
@@ -115,6 +165,14 @@ export class Universe {
       }
     }
     if (dirty) this.ctx.waitUntil(this.ctx.storage.put("stars", [...this.stars.values()]));
+    let ldirty = false;
+    for (const [id, l] of this.links) {
+      if (now - l.ts > STAR_TTL || !this.stars.has(l.a) || !this.stars.has(l.b)) {
+        this.links.delete(id);
+        ldirty = true;
+      }
+    }
+    if (ldirty) this.ctx.waitUntil(this.ctx.storage.put("links", [...this.links.values()]));
   }
 
   webSocketClose(ws: WebSocket) {
@@ -126,7 +184,7 @@ export class Universe {
     this.webSocketClose(ws);
   }
 
-  private broadcast(sender: WebSocket, msg: unknown) {
+  private broadcast(sender: WebSocket | null, msg: unknown) {
     const out = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets()) {
       if (ws !== sender) {
