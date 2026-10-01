@@ -331,7 +331,7 @@ setInterval(() => {
   const now = Date.now();
   let dirty = false;
   for (const [id, s] of fixed) {
-    if (now - s.ts > ttlFor(s.n || 0)) {
+    if (!SOLO && now - s.ts > ttlFor(s.n || 0)) { // ひとりの宇宙では星は消えない
       fixed.delete(id);
       dropLinksTouching(id);
       dirty = true;
@@ -690,8 +690,8 @@ function drawFixedStar(s, wx, wy, t) {
   if (x < -30 || x > W + 30 || y < -30 || y > H + 30) return;
   const p = PALETTES[s.c % PALETTES.length] || PEER_COLOR;
   const tw = 0.7 + 0.3 * Math.sin(t * 0.002 + hashPhase(s.id) * 10);
-  // 老いるほど薄れる。残り寿命の後半50%からフェード
-  const remain = 1 - (Date.now() - s.ts) / ttlFor(s.n || 0);
+  // 老いるほど薄れる。残り寿命の後半50%からフェード（ひとりの宇宙では老いない）
+  const remain = SOLO ? 1 : 1 - (Date.now() - s.ts) / ttlFor(s.n || 0);
   const fade = remain > 0.5 ? 1 : Math.max(0.05, remain * 2);
   const flash = s.flash ? Math.max(0, 1 - (t - s.flash) / 900) : 0;
   const r = 14 * dotScale() * (1 + flash * 0.5);
