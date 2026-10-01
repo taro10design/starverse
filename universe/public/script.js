@@ -92,9 +92,10 @@ const TOOL_SVG = {
   star: '<svg viewBox="0 0 24 24"><path d="M12 3 L14.2 9.8 L21 12 L14.2 14.2 L12 21 L9.8 14.2 L3 12 L9.8 9.8 Z" fill="currentColor"/></svg>',
   line: '<svg viewBox="0 0 24 24"><path d="M4 20 L20 4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="4" cy="20" r="2.4" fill="currentColor"/><circle cx="20" cy="4" r="2.4" fill="currentColor"/></svg>',
   erase: '<svg viewBox="0 0 24 24"><path d="M5 19 L13 5 L19 11 L11 19 Z" fill="currentColor"/><path d="M4 21 L20 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  ghost: '<svg viewBox="0 0 24 24"><path d="M12 3 C7 3 4 7 4 12 L4 20 L7 18 L9.5 20.5 L12 18 L14.5 20.5 L17 18 L20 20 L20 12 C20 7 17 3 12 3 Z" fill="currentColor"/><circle cx="9.5" cy="11" r="1.5" fill="#040612"/><circle cx="14.5" cy="11" r="1.5" fill="#040612"/></svg>',
 };
-const TOOL_TIPS = { move: "光を動かす", star: "星を置く", line: "線を引く", erase: "自分の星を消す" };
-for (const name of ["move", "star", "line", "erase"]) {
+const TOOL_TIPS = { move: "光を動かす", star: "星を置く", line: "線を引く", erase: "星を消す", ghost: "幽霊を忘れる" };
+for (const name of ["move", "star", "line", "erase", "ghost"]) {
   const b = document.createElement("button");
   b.className = "tool" + (name === tool ? " on" : "");
   b.innerHTML = TOOL_SVG[name];
@@ -104,6 +105,10 @@ for (const name of ["move", "star", "line", "erase"]) {
     e.stopPropagation();
     if (name === "erase" && tool === "erase") {
       clearMine(); // 消モードでもう一度押す＝自分の星を全部消す
+      return;
+    }
+    if (name === "ghost" && tool === "ghost") {
+      forgetAll(); // お化けモードでもう一度押す＝幽霊を全部忘れる
       return;
     }
     tool = name;
@@ -126,7 +131,8 @@ help.innerHTML = `
   <p class="dim">✦ 星：タップで置く、なぞると連続で置ける</p>
   <p class="dim">─ 線：星から星へなぞって自分で線を引く</p>
   <p class="dim">⌫ 消：誰の星でも消せる。もう一度押すと自分のが全部消える</p>
-  <p class="dim">消えた自分の星は幽霊として残る。タップで復活、消モードでなぞると忘れる</p>
+  <p class="dim">👻 幽霊：消えた自分の星をなぞって忘れる。もう一度押すと全部忘れる</p>
+  <p class="dim">消えた自分の星は幽霊として残る。光モードでタップすると復活</p>
   <p>近くの星どうし — 線がつながって星座に</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>ピンチ / ホイール — ズーム</p>
@@ -390,7 +396,7 @@ function autopilot(t) {
 const pointers = new Map();
 let pinch = null;
 let downAt = 0, downX = 0, downY = 0, downTarget = null;
-let linking = null, linkTip = null, lastPlaced = null, erasing = false;
+let linking = null, linkTip = null, lastPlaced = null, erasing = false, ghosting = false;
 
 // 画面上の点に一番近い星を返す（hit px 以内）
 function starAt(sx, sy, hit = 18, exclude = null) {
@@ -469,6 +475,9 @@ addEventListener("pointerdown", (e) => {
   } else if (tool === "erase") {
     erasing = true;
     eraseAt(e.clientX, e.clientY);
+  } else if (tool === "ghost") {
+    ghosting = true;
+    forgetAt(e.clientX, e.clientY);
   }
 });
 
@@ -498,7 +507,11 @@ addEventListener("pointermove", (e) => {
     return;
   }
   if (erasing && p) {
-    eraseAt(e.clientX, e.clientY); // なぞった自分の星を消していく
+    eraseAt(e.clientX, e.clientY); // なぞった星を消していく
+    return;
+  }
+  if (ghosting && p) {
+    forgetAt(e.clientX, e.clientY); // なぞった幽霊を忘れていく
     return;
   }
   if (tool === "star" && p) {
@@ -528,7 +541,7 @@ addEventListener("pointerup", (e) => {
     return;
   }
   lastPlaced = null;
-  erasing = false;
+  erasing = ghosting = false;
   if (wasPinch || pointers.size > 0) return;
   if (downTarget !== canvas) return;
 
@@ -550,7 +563,7 @@ addEventListener("pointercancel", (e) => {
   if (pointers.size < 2) pinch = null;
   mapDrag = false;
   linking = linkTip = lastPlaced = null;
-  erasing = false;
+  erasing = ghosting = false;
 });
 
 addEventListener(
@@ -618,15 +631,20 @@ function unstarAt(x, y) {
 }
 function eraseAt(x, y) {
   const s = starAt(x, y, 16);
-  if (s) {
-    deleteStar(s); // 消モードは誰の星でも消せる
-    return;
-  }
-  const g = ghostAt(x, y, 16);
+  if (s) deleteStar(s); // 消モードは誰の星でも消せる
+}
+function forgetAt(x, y) {
+  const g = ghostAt(x, y, 18);
   if (g) {
-    ghosts.delete(g.id); // 幽霊をなぞれば忘れる
+    ghosts.delete(g.id);
     ghostsSave();
   }
+}
+function forgetAll() {
+  if (!ghosts.size) return;
+  ghosts.clear();
+  ghostsSave();
+  haptic();
 }
 function clearMine() {
   let n = 0;
@@ -635,11 +653,6 @@ function clearMine() {
       deleteStar(s);
       n++;
     }
-  }
-  if (ghosts.size) {
-    ghosts.clear(); // 一括消去は幽霊ごと忘れる
-    ghostsSave();
-    n++;
   }
   if (n) haptic();
 }
