@@ -764,7 +764,7 @@ function revive(g, quiet) {
   }
 }
 function deleteStar(s, noGhost) {
-  if (s.by === MY_UID && !noGhost) {
+  if (isMine(s) && !noGhost) {
     ghosts.set(s.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: Date.now() });
     ghostsSave();
   }
