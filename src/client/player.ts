@@ -1,30 +1,32 @@
-import { PALETTES, autopilot } from "../../constants.js";
+import { PALETTES, autopilot } from "./constants";
+import type { Palette } from "./constants";
 
 // ---------------------------------------------------------------------------
 // Player — 自分の光。バネでターゲットへ向かう
 // ---------------------------------------------------------------------------
 export class Player {
+  x = 0.5;
+  y = 0.5;
+  vx = 0;
+  vy = 0;
+  target: { x: number; y: number } | null = null; // ポインタが来るまでは自分で漂う
+  colorIndex = 0;
+
   constructor() {
-    this.x = 0.5;
-    this.y = 0.5;
-    this.vx = 0;
-    this.vy = 0;
-    this.target = null; // {x,y} ポインタが来るまでは自分で漂う
-    this.colorIndex = 0;
     try {
       this.colorIndex = Math.min(+(localStorage.getItem("uchu-color") || 0), PALETTES.length - 1);
     } catch {}
   }
-  get palette() {
+  get palette(): Palette {
     return PALETTES[this.colorIndex];
   }
-  setColor(i) {
+  setColor(i: number) {
     this.colorIndex = i;
     try {
       localStorage.setItem("uchu-color", String(i));
     } catch {}
   }
-  update(dt, t) {
+  update(dt: number, t: number) {
     const tgt = this.target || autopilot(t);
     const k = 0.028; // ワールド座標系なので画面サイズで割らない
     this.vx += (tgt.x - this.x) * k * dt;

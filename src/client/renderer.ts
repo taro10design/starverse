@@ -1,22 +1,40 @@
-import { PALETTES, PEER_COLOR, ttlFor, MAP_SIZE } from "../../constants.js";
-import { DPR, SOLO } from "./env.js";
+import { PALETTES, PEER_COLOR, ttlFor, MAP_SIZE } from "./constants";
+import type { Palette } from "./constants";
+import { DPR, SOLO } from "./env";
+import type { App } from "./app";
+import type { Star } from "./universe";
+
+interface BgStar {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  tw: number;
+  tws: number;
+  glow: number;
+  warm: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Renderer — Canvas 描画（背景・星・線・他人・波紋・ミニマップ）
 // ---------------------------------------------------------------------------
 export class Renderer {
-  constructor(app, canvas) {
-    this.app = app;
-    this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
-    this.mctx = null; // ミニマップ（UI が作った canvas を後で受け取る）
-    this.mapBounds = { x0: 0, y0: 0, s: 1 };
+  private ctx: CanvasRenderingContext2D;
+  private mctx: CanvasRenderingContext2D | null = null; // ミニマップ（UI が作った canvas を後で受け取る）
+  private mapBounds = { x0: 0, y0: 0, s: 1 };
 
-    // グローは色ごとのスプライトを使い回す（毎フレームのグラデーション生成を避ける）
-    this.starSprites = PALETTES.map((p) => Renderer.makeSprite(p, 0.28));
-    this.peerSprite = Renderer.makeSprite(PEER_COLOR, 0.3);
-    this.playerSprites = PALETTES.map((p) => Renderer.makeSprite(p, 0.35));
+  // グローは色ごとのスプライトを使い回す（毎フレームのグラデーション生成を避ける）
+  private starSprites = PALETTES.map((p) => Renderer.makeSprite(p, 0.28));
+  private peerSprite = Renderer.makeSprite(PEER_COLOR, 0.3);
+  private playerSprites = PALETTES.map((p) => Renderer.makeSprite(p, 0.35));
+  private bgStars: BgStar[];
 
+  constructor(
+    private app: App,
+    private canvas: HTMLCanvasElement,
+  ) {
+    this.ctx = canvas.getContext("2d")!;
     this.resize();
     addEventListener("resize", () => this.resize());
     this.bgStars = Array.from({ length: 140 }, () => ({
@@ -32,10 +50,10 @@ export class Renderer {
     }));
   }
 
-  static makeSprite(p, midAlpha) {
+  static makeSprite(p: Palette, midAlpha: number): HTMLCanvasElement {
     const c = document.createElement("canvas");
     c.width = c.height = 64;
-    const g2 = c.getContext("2d");
+    const g2 = c.getContext("2d")!;
     const g = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
     g.addColorStop(0, p.core);
     g.addColorStop(0.3, `rgba(${p.glow.join(",")},${midAlpha})`);
@@ -44,17 +62,17 @@ export class Renderer {
     g2.fillRect(0, 0, 64, 64);
     return c;
   }
-  static hashPhase(id) {
+  static hashPhase(id: string): number {
     let h = 0;
     for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
     return (h % 628) / 100;
   }
 
-  setMinimap(canvas) {
-    this.mctx = canvas.getContext("2d");
+  setMinimap(canvas: HTMLCanvasElement) {
+    this.mctx = canvas.getContext("2d")!;
     this.mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
-  mapToWorld(mx, my) {
+  mapToWorld(mx: number, my: number): [number, number] {
     const { x0, y0, s } = this.mapBounds;
     return [x0 + (mx / MAP_SIZE) * s, y0 + (my / MAP_SIZE) * s];
   }
@@ -67,12 +85,12 @@ export class Renderer {
     this.ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
 
-  drawGlow(x, y, r, sprite) {
+  drawGlow(x: number, y: number, r: number, sprite: HTMLCanvasElement) {
     this.ctx.drawImage(sprite, x - r, y - r, r * 2, r * 2);
   }
 
   // 背景の星（スクリーン座標の静かな層）。自分の光と波紋に反応する
-  updateBackground(dt) {
+  updateBackground(dt: number) {
     const { camera, player, universe } = this.app;
     const { W, H } = camera;
     const [px, py] = camera.worldToScreen(player.x, player.y);
@@ -133,7 +151,7 @@ export class Renderer {
     ctx.globalAlpha = 1;
   }
 
-  drawStar(s, wx, wy, t) {
+  drawStar(s: Star, wx: number, wy: number, t: number) {
     const { ctx } = this;
     const { camera } = this.app;
     const { W, H } = camera;
@@ -158,7 +176,7 @@ export class Renderer {
   }
 
   // 星座線(自動) → 連星 → 通常の星 の順に描き、連星の今の位置を返す
-  drawStars(t) {
+  drawStars(t: number): Map<string, [number, number]> {
     const { ctx } = this;
     const { camera, universe } = this.app;
     universe.recomputePairs();
@@ -219,7 +237,7 @@ export class Renderer {
   }
 
   // 手で引かれた線（意図の線。自動の星座線より少し明るい）と引き途中の線
-  drawLinks(orbitPos) {
+  drawLinks(orbitPos: Map<string, [number, number]>) {
     const { ctx } = this;
     const { camera, universe, input } = this.app;
     ctx.strokeStyle = "rgba(225, 230, 255, 0.3)";
@@ -256,10 +274,10 @@ export class Renderer {
     for (const p of universe.peers.values()) {
       const [px, py] = camera.worldToScreen(p.rx, p.ry);
       if (px < -40 || px > W + 40 || py < -40 || py > H + 40) continue;
-      const hasColor = typeof p.c === "number";
-      const pc = hasColor ? PALETTES[p.c % PALETTES.length] : PEER_COLOR;
+      const ci = typeof p.c === "number" ? p.c % PALETTES.length : null;
+      const pc = ci !== null ? PALETTES[ci] : PEER_COLOR;
       ctx.globalAlpha = 0.75;
-      this.drawGlow(px, py, 18 * camera.dotScale(), hasColor ? this.starSprites[p.c % PALETTES.length] : this.peerSprite);
+      this.drawGlow(px, py, 18 * camera.dotScale(), ci !== null ? this.starSprites[ci] : this.peerSprite);
       ctx.globalAlpha = 1;
       ctx.fillStyle = pc.core;
       ctx.beginPath();
@@ -300,7 +318,7 @@ export class Renderer {
     const { W, H } = camera;
     let x0 = 0, y0 = 0, x1 = 1, y1 = 1;
     const corners = [camera.screenToWorld(0, 0), camera.screenToWorld(W, 0), camera.screenToWorld(W, H), camera.screenToWorld(0, H)];
-    const grow = (x, y) => {
+    const grow = (x: number, y: number) => {
       if (x < x0) x0 = x;
       if (x > x1) x1 = x;
       if (y < y0) y0 = y;
@@ -313,7 +331,7 @@ export class Renderer {
     const pad = 0.12 * Math.max(x1 - x0, y1 - y0);
     const s = Math.max(x1 - x0, y1 - y0) + pad * 2;
     const b = (this.mapBounds = { x0: (x0 + x1) / 2 - s / 2, y0: (y0 + y1) / 2 - s / 2, s });
-    const M = (wx, wy) => [((wx - b.x0) / s) * MAP_SIZE, ((wy - b.y0) / s) * MAP_SIZE];
+    const M = (wx: number, wy: number): [number, number] => [((wx - b.x0) / s) * MAP_SIZE, ((wy - b.y0) / s) * MAP_SIZE];
 
     mctx.clearRect(0, 0, MAP_SIZE, MAP_SIZE);
     mctx.fillStyle = "rgba(8, 12, 30, 0.55)";
@@ -360,7 +378,7 @@ export class Renderer {
     mctx.globalAlpha = 1;
   }
 
-  render(t) {
+  render(t: number) {
     this.drawBackground();
     const orbitPos = this.drawStars(t);
     this.drawGhosts();

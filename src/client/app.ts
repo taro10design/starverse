@@ -1,30 +1,28 @@
-import { SOLO } from "./env.js";
-import { snap } from "./util.js";
-import { Camera } from "./camera.js";
-import { Player } from "./player.js";
-import { Universe } from "./universe.js";
-import { Network } from "./network.js";
-import { History } from "./history.js";
-import { Input } from "./input.js";
-import { Renderer } from "./renderer.js";
-import { UI } from "./ui.js";
+import { SOLO } from "./env";
+import { snap } from "./util";
+import { Camera } from "./camera";
+import { Player } from "./player";
+import { Universe } from "./universe";
+import { Network } from "./network";
+import { History } from "./history";
+import { Input } from "./input";
+import { Renderer } from "./renderer";
+import { UI } from "./ui";
 
 // ---------------------------------------------------------------------------
 // App — 全体の組み立てとメインループ
 // ---------------------------------------------------------------------------
 export class App {
-  constructor() {
-    this.canvas = document.getElementById("space");
-    this.camera = new Camera();
-    this.player = new Player();
-    this.universe = new Universe({ solo: SOLO, send: (obj) => this.network.send(obj) });
-    this.network = new Network(this);
-    this.history = new History(() => this.ui.updateHistoryButtons());
-    this.input = new Input(this);
-    this.renderer = new Renderer(this, this.canvas);
-    this.ui = new UI(this);
-    this.t0 = 0;
-  }
+  readonly canvas = document.getElementById("space") as HTMLCanvasElement;
+  readonly camera = new Camera();
+  readonly player = new Player();
+  readonly universe = new Universe(SOLO, (msg) => this.network.send(msg));
+  readonly network = new Network(this);
+  readonly history = new History(() => this.ui.updateHistoryButtons());
+  readonly input = new Input(this);
+  readonly renderer = new Renderer(this, this.canvas);
+  readonly ui: UI = new UI(this);
+  private t0 = 0;
 
   init() {
     this.input.bind();
@@ -33,7 +31,7 @@ export class App {
     requestAnimationFrame((t) => this.loop(t));
   }
 
-  loop(t) {
+  loop(t: number) {
     requestAnimationFrame((n) => this.loop(n));
     const dt = Math.min((t - this.t0) / 16.7, 3) || 1;
     this.t0 = t;
@@ -41,7 +39,7 @@ export class App {
     this.renderer.render(t);
   }
 
-  update(dt, t) {
+  update(dt: number, t: number) {
     const { player, camera, universe, renderer, network } = this;
     player.update(dt, t);
     camera.follow(player);
@@ -55,7 +53,7 @@ export class App {
   // 消モードでもう一度押す＝自分の星を全部消す
   clearMine() {
     const { universe, history, player, ui } = this;
-    const list = [];
+    const list: ReturnType<typeof snap>[] = [];
     for (const s of [...universe.stars.values()]) {
       if (universe.isMine(s)) {
         list.push(snap(s));
@@ -78,8 +76,8 @@ export class App {
   }
 
   // 幽霊を全部復活（復活した数を返す）
-  reviveAllGhosts() {
-    const { universe, history, player } = this;
+  reviveAllGhosts(): number {
+    const { universe, history } = this;
     const gs = [...universe.ghosts.values()].map((g) => ({ ...g }));
     for (const g of gs) universe.reviveGhost(g);
     if (gs.length) {

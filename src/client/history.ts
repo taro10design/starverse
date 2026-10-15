@@ -1,19 +1,24 @@
 // ---------------------------------------------------------------------------
 // History — アンドゥ / リドゥ
 // ---------------------------------------------------------------------------
+export interface Op {
+  undo: () => void;
+  redo: () => void;
+}
+
 export class History {
-  constructor(onChange) {
-    this.undoStack = [];
-    this.redoStack = [];
-    this.onChange = onChange;
+  private undoStack: Op[] = [];
+  private redoStack: Op[] = [];
+
+  constructor(private onChange: () => void) {
   }
-  get canUndo() {
+  get canUndo(): boolean {
     return this.undoStack.length > 0;
   }
-  get canRedo() {
+  get canRedo(): boolean {
     return this.redoStack.length > 0;
   }
-  pushOp(op) {
+  pushOp(op: Op) {
     this.undoStack.push(op);
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack.length = 0;

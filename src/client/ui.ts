@@ -1,5 +1,7 @@
-import { PALETTES, MAP_SIZE, TOOL_SVG, TOOL_TIPS } from "../../constants.js";
-import { DPR, SOLO } from "./env.js";
+import { PALETTES, MAP_SIZE, TOOL_SVG, TOOL_TIPS } from "./constants";
+import { DPR, SOLO } from "./env";
+import type { ToolName } from "./constants";
+import type { App } from "./app";
 
 // ---------------------------------------------------------------------------
 // UI — DOM の生成とイベント、触覚・音のフィードバック
@@ -8,10 +10,13 @@ const ICON_UNDO = '<svg viewBox="0 0 24 24"><path d="M8 5 L3 9.5 L8 14" fill="no
 const ICON_REDO = '<svg viewBox="0 0 24 24"><path d="M16 5 L21 9.5 L16 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9.5 L10 9.5 A6 6 0 0 0 10 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 export class UI {
-  constructor(app) {
-    this.app = app;
-    this.hapticEl = null;
-    this.audioCtx = null;
+  private hapticEl: HTMLInputElement | null = null;
+  private audioCtx: AudioContext | null = null;
+  private undoBtn!: HTMLButtonElement;
+  private redoBtn!: HTMLButtonElement;
+  mapEl!: HTMLCanvasElement;
+
+  constructor(private app: App) {
     this.createPalette();
     this.createModeToggle();
     this.createTools();
@@ -21,7 +26,7 @@ export class UI {
   }
 
   // pointerdown が下のキャンバスに伝わらないようにして実行する
-  static onPress(el, fn) {
+  static onPress(el: HTMLElement, fn: (e: PointerEvent) => void) {
     el.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       fn(e);
@@ -30,7 +35,7 @@ export class UI {
 
   createPalette() {
     const { player, universe, network } = this.app;
-    const el = (this.paletteEl = document.createElement("div"));
+    const el = document.createElement("div");
     el.id = "palette";
     PALETTES.forEach((p, i) => {
       const b = document.createElement("button");
@@ -65,9 +70,9 @@ export class UI {
 
   createTools() {
     const { input, history } = this.app;
-    const el = (this.toolsEl = document.createElement("div"));
+    const el = document.createElement("div");
     el.id = "tools";
-    for (const name of ["move", "star", "line", "erase", "ghost"]) {
+    for (const name of ["move", "star", "line", "erase", "ghost"] as ToolName[]) {
       const b = document.createElement("button");
       b.className = "tool" + (name === input.tool ? " on" : "");
       b.innerHTML = TOOL_SVG[name];
@@ -107,10 +112,10 @@ export class UI {
   }
 
   createHelpPanel() {
-    const btn = (this.helpBtn = document.createElement("button"));
+    const btn = document.createElement("button");
     btn.id = "helpbtn";
     btn.textContent = "?";
-    const help = (this.helpEl = document.createElement("div"));
+    const help = document.createElement("div");
     help.id = "help";
     help.innerHTML = `
   <p>左下 — モードを切り替える</p>
@@ -136,10 +141,10 @@ export class UI {
     document.body.appendChild(btn);
     document.body.appendChild(help);
 
-    const keyBtn = help.querySelector("#keybtn");
+    const keyBtn = help.querySelector<HTMLElement>("#keybtn")!;
     UI.onPress(keyBtn, () => this.copyKeyLink(keyBtn));
 
-    const reviveBtn = help.querySelector("#revivebtn");
+    const reviveBtn = help.querySelector<HTMLElement>("#revivebtn")!;
     UI.onPress(reviveBtn, () => {
       const n = this.app.reviveAllGhosts();
       reviveBtn.textContent = n ? `${n}個復活した` : "幽霊がいない";
@@ -154,7 +159,7 @@ export class UI {
 
     // パネル外をタップしたら閉じる
     addEventListener("pointerdown", (e) => {
-      if (help.classList.contains("open") && e.target !== btn && !(e.target.closest && e.target.closest("#help"))) {
+      if (help.classList.contains("open") && e.target !== btn && !(e.target instanceof Element && e.target.closest("#help"))) {
         help.classList.remove("open");
         try {
           localStorage.setItem("uchu-seen", "1");
@@ -164,7 +169,7 @@ export class UI {
   }
 
   // 「鍵リンク」＝uid入りURL。このリンクで開くとどのブラウザでも自分の星のまま
-  copyKeyLink(keyBtn) {
+  copyKeyLink(keyBtn: HTMLElement) {
     const url = location.origin + location.pathname + "?key=" + this.app.universe.uid;
     const done = () => {
       keyBtn.textContent = "コピーした";
@@ -212,7 +217,7 @@ export class UI {
 
   ping() {
     try {
-      const actx = (this.audioCtx = this.audioCtx || new (window.AudioContext || window.webkitAudioContext)());
+      const actx = (this.audioCtx = this.audioCtx || new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)());
       const o = actx.createOscillator();
       const g = actx.createGain();
       o.type = "sine";

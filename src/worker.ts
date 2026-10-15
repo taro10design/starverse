@@ -1,3 +1,5 @@
+import type { StarData, LinkData, ClientMessage, ServerMessage } from "./shared/protocol";
+
 interface Env {
   UNIVERSE: DurableObjectNamespace;
   ASSETS: Fetcher;
@@ -10,23 +12,8 @@ interface Session {
   c: number;
 }
 
-interface FixedStar {
-  id: string;
-  x: number;
-  y: number;
-  c: number;
-  by: string;
-  ts: number;
-}
-
-// 誰かが意図して引いた線。星aと星bを結ぶ
-interface Link {
-  id: string;
-  a: string;
-  b: string;
-  by: string;
-  ts: number;
-}
+type FixedStar = StarData;
+type Link = LinkData;
 
 const MAX_STARS = 500;
 const MAX_STARS_PER_USER = 64;
@@ -84,7 +71,7 @@ export class Universe {
     if (!meta || typeof message !== "string") return;
 
     try {
-      const data = JSON.parse(message);
+      const data = JSON.parse(message) as ClientMessage;
       if (data.t === "p") {
         meta.x = data.x;
         meta.y = data.y;
@@ -223,7 +210,7 @@ export class Universe {
     this.webSocketClose(ws);
   }
 
-  private broadcast(sender: WebSocket | null, msg: unknown) {
+  private broadcast(sender: WebSocket | null, msg: ServerMessage) {
     const out = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets()) {
       if (ws !== sender) {

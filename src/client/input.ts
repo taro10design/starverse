@@ -1,31 +1,42 @@
-import { HIT_RADIUS } from "../../constants.js";
-import { snap, mid, dist } from "./util.js";
+import { HIT_RADIUS } from "./constants";
+import type { ToolName } from "./constants";
+import { snap, mid, dist } from "./util";
+import type { Point } from "./util";
+import type { App } from "./app";
+import type { Star, Ghost } from "./universe";
+
+interface PinchState {
+  d0: number;
+  z0: number;
+  wx: number;
+  wy: number;
+}
+type StarSnap = ReturnType<typeof snap>;
 
 // ---------------------------------------------------------------------------
 // Input — ポインタ / タッチ / キーボード
 // ---------------------------------------------------------------------------
 
 export class Input {
-  constructor(app) {
-    this.app = app;
-    this.tool = "move";
-    this.pointers = new Map();
-    this.pinch = null;
-    this.mapDrag = false;
-    this.downAt = 0;
-    this.downX = 0;
-    this.downY = 0;
-    this.downTarget = null;
-    this.linking = null; // 線を引き始めた星
-    this.linkTip = null; // 引き途中の先端（ワールド座標）
-    this.lastPlaced = null;
-    this.erasing = false;
-    this.ghosting = false;
-    // ドラッグ中の連続操作を一つの履歴として束ねる
-    this.placeBatch = null;
-    this.eraseBatch = null;
-    this.forgetBatch = null;
-  }
+  tool: ToolName = "move";
+  linking: Star | null = null; // 線を引き始めた星
+  linkTip: [number, number] | null = null; // 引き途中の先端（ワールド座標）
+
+  private pointers = new Map<number, Point>();
+  private pinch: PinchState | null = null;
+  private mapDrag = false;
+  private downX = 0;
+  private downY = 0;
+  private downTarget: EventTarget | null = null;
+  private lastPlaced: [number, number] | null = null;
+  private erasing = false;
+  private ghosting = false;
+  // ドラッグ中の連続操作を一つの履歴として束ねる
+  private placeBatch: StarSnap[] | null = null;
+  private eraseBatch: StarSnap[] | null = null;
+  private forgetBatch: Ghost[] | null = null;
+
+  constructor(private app: App) {}
 
   bind() {
     addEventListener("pointerdown", (e) => this.handlePointerDown(e));
@@ -37,31 +48,31 @@ export class Input {
     addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
-  setTool(name) {
+  setTool(name: ToolName) {
     this.tool = name;
   }
-  startMapDrag(e) {
+  startMapDrag(e: MouseEvent) {
     this.mapDrag = true;
     this.moveToMap(e.offsetX, e.offsetY);
     this.app.camera.free = false;
   }
-  moveToMap(mx, my) {
+  moveToMap(mx: number, my: number) {
     const [wx, wy] = this.app.renderer.mapToWorld(mx, my);
     this.app.player.target = { x: wx, y: wy };
   }
 
   // 画面上の点に近い星 / 幽霊（hit px 以内）
-  starAt(sx, sy, hit = HIT_RADIUS, exclude = null) {
+  starAt(sx: number, sy: number, hit = HIT_RADIUS, exclude: string | null = null): Star | null {
     const { camera, universe } = this.app;
     const [wx, wy] = camera.screenToWorld(sx, sy);
     return universe.getStarAt(wx, wy, hit / camera.scalePx(), exclude);
   }
-  ghostAt(sx, sy, hit = 20) {
+  ghostAt(sx: number, sy: number, hit = 20): Ghost | null {
     const { camera, universe } = this.app;
     const [wx, wy] = camera.screenToWorld(sx, sy);
     return universe.getGhostAt(wx, wy, hit / camera.scalePx());
   }
-  unstarAt(x, y) {
+  unstarAt(x: number, y: number): Star | null {
     const s = this.starAt(x, y, 20);
     if (s && this.app.universe.isMine(s)) {
       this.app.universe.deleteStar(s);
@@ -69,7 +80,7 @@ export class Input {
     }
     return null;
   }
-  eraseAt(x, y) {
+  eraseAt(x: number, y: number): Star | null {
     const s = this.starAt(x, y, 16);
     if (s) {
       this.app.universe.deleteStar(s); // 消モードは誰の星でも消せる
@@ -77,7 +88,7 @@ export class Input {
     }
     return null;
   }
-  forgetAt(x, y) {
+  forgetAt(x: number, y: number): Ghost | null {
     const g = this.ghostAt(x, y, 18);
     if (g) {
       this.app.universe.forgetGhost(g);
@@ -89,8 +100,8 @@ export class Input {
   finalizeBatches() {
     const { universe, history, player } = this.app;
     const color = () => player.colorIndex;
-    const place = (st) => universe.placeStar(st.x, st.y, color(), st);
-    const remove = (st, noGhost) => {
+    const place = (st: StarSnap) => universe.placeStar(st.x, st.y, color(), st);
+    const remove = (st: StarSnap, noGhost?: boolean) => {
       const s = universe.stars.get(st.id);
       if (s) universe.deleteStar(s, noGhost);
     };
@@ -127,7 +138,7 @@ export class Input {
     }
   }
 
-  handlePointerDown(e) {
+  handlePointerDown(e: PointerEvent) {
     const { camera, universe, player, network, ui, history } = this.app;
     this.downTarget = e.target;
     if (e.target !== this.app.canvas) return;
@@ -140,7 +151,6 @@ export class Input {
       return;
     }
     const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
-    this.downAt = performance.now();
     this.downX = e.clientX;
     this.downY = e.clientY;
     universe.addPulse(wx, wy, 1, player.palette.glow);
@@ -190,7 +200,7 @@ export class Input {
     }
   }
 
-  handlePointerMove(e) {
+  handlePointerMove(e: PointerEvent) {
     const { camera, universe, player } = this.app;
     if (this.mapDrag) {
       const r = this.app.ui.mapEl.getBoundingClientRect();
@@ -240,7 +250,7 @@ export class Input {
     }
   }
 
-  handlePointerUp(e) {
+  handlePointerUp(e: PointerEvent) {
     const { universe, history, player, ui } = this.app;
     const wasPinch = this.pinch !== null;
     this.pointers.delete(e.pointerId);
@@ -301,7 +311,7 @@ export class Input {
     }
   }
 
-  handlePointerCancel(e) {
+  handlePointerCancel(e: PointerEvent) {
     this.pointers.delete(e.pointerId);
     if (this.pointers.size < 2) this.pinch = null;
     this.mapDrag = false;
@@ -310,13 +320,13 @@ export class Input {
     this.erasing = this.ghosting = false;
   }
 
-  handleWheel(e) {
+  handleWheel(e: WheelEvent) {
     if (e.target !== this.app.canvas) return;
     e.preventDefault();
     this.app.camera.zoomAt(Math.exp(-e.deltaY * 0.0012), e.clientX, e.clientY);
   }
 
-  handleKeyDown(e) {
+  handleKeyDown(e: KeyboardEvent) {
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = e.key.toLowerCase();
     if (k === "z") {

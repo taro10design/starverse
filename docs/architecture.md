@@ -9,7 +9,7 @@
 
 | 要素 | 役割 |
 | --- | --- |
-| Cloudflare Pages | `` を配信（`uchu.pages.dev`） |
+| Cloudflare Pages | `dist/` を配信（`uchu.pages.dev`） |
 | Workers | `/ws` への WebSocket アップグレードを Durable Object に中継。それ以外は静的アセットを返す（[src/worker.ts](../src/worker.ts)） |
 | Durable Objects | 部屋の状態（接続中の全員の位置、星、線）を単一インスタンスで管理し、全員にブロードキャストする。SQLite バックエンド（[wrangler.jsonc](../wrangler.jsonc) の `new_sqlite_classes`） |
 
@@ -48,17 +48,19 @@ JSON を WebSocket で送受信します。`t` が種別です。ペイロード
 
 ### 技術スタック
 
-- フロントエンド: 素の JavaScript + Canvas 2D（ライブラリ・ビルド工程なし）。毎フレームのグラデーション生成を避けるため色ごとのスプライトを使い回しています
+- フロントエンド: TypeScript + Canvas 2D（Vite でビルド、ライブラリ依存なし）。毎フレームのグラデーション生成を避けるため色ごとのスプライトを使い回しています
 - バックエンド: TypeScript、Cloudflare Workers + Durable Objects
 - ツール: Wrangler
 
 ### ローカル実行・デプロイ
 
 ```bash
-# 静的ファイルのみ確認（リアルタイム同期は本番の Worker に接続される）
-npx serve .
+npm install
+npm run dev          # 開発サーバー（リアルタイム同期は本番の Worker に接続される）
+npm run typecheck    # クライアント・Worker の型チェック
+npm run build        # dist/ に静的ファイルを出力
 
 # デプロイ
-npx wrangler pages deploy . --project-name uchu   # 静的ファイル
-npx wrangler deploy                               # Worker を変えたとき
+npm run deploy                # ビルド + Pages へ配信
+npx wrangler deploy           # Worker を変えたとき
 ```

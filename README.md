@@ -4,7 +4,7 @@
 
 **https://uchu.pages.dev**
 
-![宇宙のスクリーンショット](ogp-preview.png)
+![宇宙のスクリーンショット](public/ogp-preview.png)
 
 複数の端末から同じ空を見て、互いの光（カーソル）が見える共有キャンバスです。星を灯し、星どうしを線で結んで星座を作れます。文字や会話の機能は意図的に無く、「同じ空にいる」ことだけを体験にしています。
 
@@ -26,8 +26,9 @@
 
 ## 技術スタック
 
-- **フロントエンド**: 素の JavaScript + Canvas 2D
+- **フロントエンド**: TypeScript + Canvas 2D（Vite でビルド、ライブラリ依存なし）
 - **バックエンド**: TypeScript + Cloudflare Workers + Durable Objects
+- **共通**: WebSocket のメッセージ型を [src/shared/protocol.ts](src/shared/protocol.ts) でクライアントとサーバーが共有
 - **配信**: Cloudflare Pages
 - **機能**: リアルタイム同期（WebSocket）、永続化（SQLite）、スパム対策（密度ルール）
 

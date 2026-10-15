@@ -1,16 +1,17 @@
-import { PALETTES, WS_HOST } from "../../constants.js";
-import { SOLO } from "./env.js";
+import { PALETTES, WS_HOST } from "./constants";
+import { SOLO } from "./env";
+import type { ClientMessage, ServerMessage } from "../shared/protocol";
+import type { App } from "./app";
 
 // ---------------------------------------------------------------------------
 // Network — WebSocket 通信
 // ---------------------------------------------------------------------------
 export class Network {
-  constructor(app) {
-    this.app = app;
-    this.ws = null;
-    this.retry = 1500;
-    this.lastSend = 0;
-  }
+  private ws: WebSocket | null = null;
+  private retry = 1500;
+  private lastSend = 0;
+
+  constructor(private app: App) {}
   connect() {
     if (SOLO || location.protocol === "file:") return;
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -19,7 +20,7 @@ export class Network {
       this.retry = 1500;
       this.sendPosition();
     };
-    ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data));
+    ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data) as ServerMessage);
     ws.onclose = () => {
       this.app.universe.peers.clear();
       setTimeout(() => this.connect(), this.retry);
@@ -27,7 +28,7 @@ export class Network {
     };
     ws.onerror = () => ws.close();
   }
-  send(obj) {
+  send(obj: ClientMessage) {
     if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj));
   }
   sendPosition() {
@@ -35,13 +36,13 @@ export class Network {
     this.send({ t: "p", x: player.x, y: player.y, c: player.colorIndex });
   }
   // 位置は80msごとに間引いて送る
-  tick(t) {
+  tick(t: number) {
     if (t - this.lastSend > 80) {
       this.lastSend = t;
       this.sendPosition();
     }
   }
-  handleMessage(m) {
+  handleMessage(m: ServerMessage) {
     const u = this.app.universe;
     if (m.t === "welcome") {
       u.myId = m.id;

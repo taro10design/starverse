@@ -1,32 +1,67 @@
-import { PALETTES, CROWD_R, GHOST_TTL, ttlFor } from "../../constants.js";
+import { PALETTES, CROWD_R, GHOST_TTL, ttlFor } from "./constants";
+import type { RGB } from "./constants";
+import type { StarData, LinkData, ClientMessage } from "../shared/protocol";
 
 // ---------------------------------------------------------------------------
 // Universe — 星・線・幽霊・他人・波紋の状態と生態系ルール
 // ---------------------------------------------------------------------------
+// クライアント側の星は、サーバーの星に描画用の一時状態が付く
+export interface Star extends StarData {
+  n?: number; // 近傍の星の数（密集度）
+  flash?: number; // きらめきの開始時刻
+}
+// 消された自分の星（自分の画面にだけ残る）
+export interface Ghost {
+  id: string;
+  x: number;
+  y: number;
+  c: number;
+  gone: number;
+}
+export interface Peer {
+  x: number;
+  y: number;
+  rx: number; // 補間された表示位置
+  ry: number;
+  c?: number;
+}
+export interface Pulse {
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  col: RGB;
+}
+export interface Pair {
+  a: Star;
+  b: Star;
+  binary: boolean;
+}
+
 export class Universe {
-  constructor({ solo, send }) {
-    this.solo = solo;
-    this.send = send;
+  readonly uid = Universe.loadUid();
+  myId: string | null;
+  readonly stars = new Map<string, Star>();
+  readonly links = new Map<string, LinkData>(); // 誰かが手で引いた線
+  readonly ghosts = new Map<string, Ghost>();
+  readonly peers = new Map<string, Peer>();
+  pulses: Pulse[] = [];
+  pairsDirty = true;
+  pairList: Pair[] = [];
+  private saveTimer = 0;
+
+  constructor(
+    private solo: boolean,
+    private send: (msg: ClientMessage) => void,
+  ) {
     this.myId = solo ? "me" : null;
-    this.uid = Universe.loadUid();
-
-    this.stars = new Map(); // id -> FixedStar（ワールド座標）
-    this.links = new Map(); // id -> {id,a,b,by,ts} 誰かが手で引いた線
-    this.ghosts = new Map(); // id -> {id,x,y,c,gone} 消された自分の星（自分の画面にだけ残る）
-    this.peers = new Map(); // id -> {x,y,rx,ry,c}
-    this.pulses = [];
-
-    this.pairsDirty = true;
-    this.pairList = [];
-    this.saveTimer = 0;
-
     this.loadGhosts();
     if (solo) this.loadSolo();
   }
 
   // このブラウザ固有の持ち主ID。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）
-  static loadUid() {
-    let uid = null;
+  static loadUid(): string {
+    let uid: string | null = null;
     try {
       uid = new URLSearchParams(location.search).get("key") || localStorage.getItem("uchu-uid");
     } catch {}
@@ -37,14 +72,14 @@ export class Universe {
     return uid;
   }
 
-  isMine(s) {
+  isMine(s: { by: string }): boolean {
     return s.by === this.uid || s.by === "me" || s.by === this.myId;
   }
 
   // --- 永続化 ---
   loadGhosts() {
     try {
-      for (const g of JSON.parse(localStorage.getItem("uchu-ghosts") || "[]")) {
+      for (const g of JSON.parse(localStorage.getItem("uchu-ghosts") || "[]") as Ghost[]) {
         if (Date.now() - g.gone < GHOST_TTL) this.ghosts.set(g.id, g);
       }
     } catch {}
@@ -75,7 +110,7 @@ export class Universe {
   }
 
   // --- 星 ---
-  placeStar(nx, ny, color, ghost) {
+  placeStar(nx: number, ny: number, color: number, ghost?: Pick<Star, "id" | "x" | "y" | "c"> | null): Star {
     const s = ghost
       ? { id: ghost.id, x: ghost.x, y: ghost.y, c: ghost.c, by: this.uid, ts: Date.now() } // 幽霊の復活
       : { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: color, by: this.uid, ts: Date.now() };
@@ -85,7 +120,7 @@ export class Universe {
     this.send({ t: "star", id: s.id, x: s.x, y: s.y, uid: this.uid });
     return s;
   }
-  deleteStar(s, noGhost) {
+  deleteStar(s: Star, noGhost?: boolean) {
     if (this.isMine(s) && !noGhost) {
       this.ghosts.set(s.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: Date.now() });
       this.saveGhosts();
@@ -97,14 +132,14 @@ export class Universe {
     this.send({ t: "unstar", id: s.id, uid: this.uid });
   }
   // 他人の星をタップ＝きらめきを送る。寿命がリセットされる
-  admire(s) {
+  admire(s: Star) {
     s.flash = performance.now();
     this.addPulse(s.x, s.y, 0.9, PALETTES[s.c % PALETTES.length].glow);
     this.send({ t: "admire", id: s.id });
   }
   // 最寄りの星（ワールド座標、半径はワールド単位）
-  getStarAt(wx, wy, radius, exclude = null) {
-    let best = null, bd = radius * radius;
+  getStarAt(wx: number, wy: number, radius: number, exclude: string | null = null): Star | null {
+    let best: Star | null = null, bd = radius * radius;
     for (const s of this.stars.values()) {
       if (s.id === exclude) continue;
       const dx = s.x - wx, dy = s.y - wy, d = dx * dx + dy * dy;
@@ -114,7 +149,7 @@ export class Universe {
   }
 
   // --- 線 ---
-  addLink(a, b) {
+  addLink(a: string, b: string): LinkData | null {
     if (!a || !b || a === b) return null;
     for (const l of this.links.values()) {
       if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return null;
@@ -123,37 +158,37 @@ export class Universe {
     this.restoreLink(l);
     return l;
   }
-  restoreLink(l) {
+  restoreLink(l: LinkData) {
     this.links.set(l.id, l);
     this.saveSolo();
     this.send({ t: "link", id: l.id, a: l.a, b: l.b, uid: this.uid });
   }
-  removeLink(id) {
+  removeLink(id: string) {
     this.links.delete(id);
     this.saveSolo();
     this.send({ t: "unlink", id, uid: this.uid });
   }
-  dropLinksTouching(starId) {
+  dropLinksTouching(starId: string) {
     for (const [lid, l] of this.links) {
       if (l.a === starId || l.b === starId) this.links.delete(lid);
     }
   }
 
   // --- 幽霊 ---
-  getGhostAt(wx, wy, radius) {
-    let best = null, bd = radius * radius;
+  getGhostAt(wx: number, wy: number, radius: number): Ghost | null {
+    let best: Ghost | null = null, bd = radius * radius;
     for (const g of this.ghosts.values()) {
       const dx = g.x - wx, dy = g.y - wy, d = dx * dx + dy * dy;
       if (d < bd) { bd = d; best = g; }
     }
     return best;
   }
-  reviveGhost(g) {
+  reviveGhost(g: Ghost): Star {
     this.ghosts.delete(g.id);
     this.saveGhosts();
     return this.placeStar(g.x, g.y, g.c, g);
   }
-  forgetGhost(g) {
+  forgetGhost(g: Ghost) {
     this.ghosts.delete(g.id);
     this.saveGhosts();
   }
@@ -163,10 +198,10 @@ export class Universe {
   }
 
   // --- 他人・波紋 ---
-  addPulse(x, y, life, col) {
+  addPulse(x: number, y: number, life: number, col: RGB) {
     this.pulses.push({ x, y, r: 0, life, col });
   }
-  updatePulses(dt, W, H) {
+  updatePulses(dt: number, W: number, H: number) {
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
       p.r += (6 / Math.min(W, H)) * dt;
@@ -174,7 +209,7 @@ export class Universe {
       if (p.life <= 0) this.pulses.splice(i, 1);
     }
   }
-  updatePeers(dt) {
+  updatePeers(dt: number) {
     for (const p of this.peers.values()) {
       p.rx += (p.x - p.rx) * Math.min(1, 0.12 * dt);
       p.ry += (p.y - p.ry) * Math.min(1, 0.12 * dt);
@@ -192,8 +227,8 @@ export class Universe {
         const d = Math.hypot(arr[i].x - arr[j].x, arr[i].y - arr[j].y);
         if (d < 0.1) this.pairList.push({ a: arr[i], b: arr[j], binary: d < 0.032 });
         if (d < CROWD_R) {
-          arr[i].n++;
-          arr[j].n++;
+          arr[i].n = (arr[i].n ?? 0) + 1;
+          arr[j].n = (arr[j].n ?? 0) + 1;
         }
       }
     }
