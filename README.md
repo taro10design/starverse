@@ -38,15 +38,15 @@
 | 要素 | 役割 |
 | --- | --- |
 | Cloudflare Pages | `public/` を配信（`uchu.pages.dev`） |
-| Workers | `/ws` への WebSocket アップグレードを Durable Object に中継。それ以外は静的アセットを返す（[src/worker.ts](universe/src/worker.ts)） |
-| Durable Objects | 部屋の状態（接続中の全員の位置、星、線）を単一インスタンスで管理し、全員にブロードキャストする。SQLite バックエンド（[wrangler.jsonc](universe/wrangler.jsonc) の `new_sqlite_classes`） |
+| Workers | `/ws` への WebSocket アップグレードを Durable Object に中継。それ以外は静的アセットを返す（[src/worker.ts](src/worker.ts)） |
+| Durable Objects | 部屋の状態（接続中の全員の位置、星、線）を単一インスタンスで管理し、全員にブロードキャストする。SQLite バックエンド（[wrangler.jsonc](wrangler.jsonc) の `new_sqlite_classes`） |
 
 実装上のポイント:
 
 - **Hibernation API**: `ctx.acceptWebSocket()` で接続を受け、`webSocketMessage` などのハンドラで処理しています。アイドル時は Durable Object がメモリから退避され、課金・リソースを抑えられます。
 - **接続ごとの状態は `serializeAttachment`**: 退避から復帰しても各接続の ID・位置・色が失われません。
 - **永続化**: 星と線は `storage.put` で保存し、コンストラクタの `blockConcurrencyWhile` で復元してから最初のリクエストを処理します。
-- **接続先の切り替え**: `workers.dev` で開いた場合は同一オリジンに、それ以外（Pages やローカル）では Worker のホストへ接続します（[script.js](universe/public/script.js) の `WS_HOST`）。
+- **接続先の切り替え**: `workers.dev` で開いた場合は同一オリジンに、それ以外（Pages やローカル）では Worker のホストへ接続します（[script.js](public/script.js) の `WS_HOST`）。
 
 ### スパム・荒らし対策
 
@@ -82,10 +82,9 @@ JSON を WebSocket で送受信します。`t` が種別です。
 
 ```bash
 # 静的ファイルのみ確認（リアルタイム同期は本番の Worker に接続される）
-npx serve universe/public
+npx serve public
 
 # デプロイ
-cd universe
 npx wrangler pages deploy public --project-name uchu   # 静的ファイル
 npx wrangler deploy                                    # Worker を変えたとき
 ```
