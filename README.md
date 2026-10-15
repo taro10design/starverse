@@ -30,3 +30,5 @@
 - **バックエンド**: TypeScript + Cloudflare Workers + Durable Objects
 - **配信**: Cloudflare Pages
 - **機能**: リアルタイム同期（WebSocket）、永続化（SQLite）、スパム対策（密度ルール）
+
+[技術詳細はこちら](docs/architecture.md)
