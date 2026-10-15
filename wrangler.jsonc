@@ -3,7 +3,7 @@
   "main": "./src/worker.ts",
   "compatibility_date": "2026-10-01",
   "assets": {
-    "directory": "./public",
+    "directory": ".",
     "binding": "ASSETS"
   },
   "durable_objects": {
