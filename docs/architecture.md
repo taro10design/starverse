@@ -18,7 +18,7 @@
 - **Hibernation API**: `ctx.acceptWebSocket()` で接続を受け、`webSocketMessage` などのハンドラで処理しています。アイドル時は Durable Object がメモリから退避され、課金・リソースを抑えられます。
 - **接続ごとの状態は `serializeAttachment`**: 退避から復帰しても各接続の ID・位置・色が失われません。
 - **永続化**: 星と線は `storage.put` で保存し、コンストラクタの `blockConcurrencyWhile` で復元してから最初のリクエストを処理します。
-- **接続先の切り替え**: `workers.dev` で開いた場合は同一オリジンに、それ以外（Pages やローカル）では Worker のホストへ接続します（[main.js](main.js) の `WS_HOST`）。
+- **接続先の切り替え**: `workers.dev` で開いた場合は同一オリジンに、それ以外（Pages やローカル）では Worker のホストへ接続します（[constants.js](../constants.js) の `WS_HOST`）。
 
 ### スパム・荒らし対策
 
