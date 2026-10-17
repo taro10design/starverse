@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Cooldown, TokenBucket, WindowCounter } from "../src/rate-limit";
+import { Cooldown, TokenBucket } from "../src/rate-limit";
 
 describe("TokenBucket", () => {
   it("容量まではバーストできる", () => {
@@ -90,33 +90,5 @@ describe("Cooldown（同じ鍵の操作の間隔）", () => {
     expect(c.allow("b", 6001)).toBe(false);
     expect(c.allow("c", 6001)).toBe(false);
     expect(c.size).toBeLessThanOrEqual(3);
-  });
-});
-
-describe("WindowCounter（直近の時間あたりの回数）", () => {
-  it("窓の中で上限回まで通し、それを超えると断る", () => {
-    const w = new WindowCounter(60_000, 3, 100);
-    expect(w.allow("ip", 0)).toBe(true);
-    expect(w.allow("ip", 1)).toBe(true);
-    expect(w.allow("ip", 2)).toBe(true);
-    expect(w.allow("ip", 3)).toBe(false);
-    expect(w.allow("other", 3)).toBe(true); // 鍵ごとに数える
-  });
-
-  it("窓を過ぎた分は数えない。断った回は数えない", () => {
-    const w = new WindowCounter(60_000, 2, 100);
-    w.allow("ip", 0);
-    w.allow("ip", 30_000);
-    for (let i = 0; i < 10; i++) w.allow("ip", 40_000); // 全部断られる
-    expect(w.allow("ip", 60_000)).toBe(true); // 0 の分が窓から出た
-    expect(w.allow("ip", 60_001)).toBe(false);
-  });
-
-  it("覚える鍵の数に上限がある", () => {
-    const w = new WindowCounter(60_000, 1, 2);
-    w.allow("a", 0);
-    w.allow("b", 0);
-    w.allow("c", 0);
-    expect(w.size).toBeLessThanOrEqual(2);
   });
 });

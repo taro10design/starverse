@@ -6,7 +6,7 @@
 // /stats は token が要る。E2E_STATS_TOKEN を渡すと、そのトークンで中身まで確かめる（ローカルは .dev.vars の値）。
 //   E2E_STATS_TOKEN=dev-stats-token node scripts/e2e.mjs http://localhost:8787 --full
 //
-// 本番は同じ接続元からの接続数が 1 つの空あたり 4 までなので、読み取りだけのモードは同時に 4 本までしか開かない。
+// 本番は同じ接続元からの接続の頻度をエッジのレート制限ルールで絞る（ADR 0009）ので、読み取りだけのモードは開く本数を少なくしている。
 // 終了コードは、全部通れば 0、失敗があれば 1。
 
 const base = (process.argv[2] ?? "http://localhost:8787").replace(/\/$/, "");
@@ -27,7 +27,7 @@ function skip(name, why) {
 }
 
 // サーバーが保存にだけ使う項目（StoredStar / StoredLink）。配信に出てきたら漏れている
-const SERVER_ONLY = ["born", "origin", "v"];
+const SERVER_ONLY = ["born", "v"];
 const hasServerOnly = (o) => SERVER_ONLY.some((k) => Object.hasOwn(o, k));
 
 const newUid = () => crypto.randomUUID();
@@ -255,7 +255,7 @@ try {
     check("welcome の me が自分の星の by と一致する", !!star && star.by === welcomeB?.me);
     check("星の色は star メッセージの c", !!star && star.c === 3, `c=${star?.c}`);
     check(
-      "配信される星にサーバー専用の born / origin / v が含まれない",
+      "配信される星にサーバー専用の born / v が含まれない",
       !!star && !hasServerOnly(star),
       star && Object.keys(star).join(","),
     );
@@ -283,7 +283,7 @@ try {
     check("持ち主以外は線を消せない", !!w1?.links.some((l) => l.id === ids.l1));
     check("welcome の星の持ち主に uid が出てこない", !!w1 && !w1.stars.some((s) => s.by === B.uid || s.by === A.uid));
     check(
-      "welcome の星・線にサーバー専用の born / origin / v が含まれない",
+      "welcome の星・線にサーバー専用の born / v が含まれない",
       !!w1 && w1.stars.length > 0 && !w1.stars.some(hasServerOnly) && !w1.links.some(hasServerOnly),
     );
 

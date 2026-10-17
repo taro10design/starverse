@@ -22,7 +22,7 @@ function fakeRoom() {
       return this.clock;
     },
     send: (_c, msg) => log.sent.push(msg),
-    broadcast: (msg) => log.all.push(msg),
+    broadcastAll: (msg) => log.all.push(msg),
     broadcastNear: (msg, x, y) => log.near.push({ msg, x, y }),
     markDirty: () => undefined,
     persist: () => undefined,
@@ -31,12 +31,11 @@ function fakeRoom() {
   return { room, log };
 }
 
-function member(owner: string, ip: string | null = null): Member {
+function member(owner: string): Member {
   return {
     ws: {} as WebSocket,
     id: owner.slice(0, 8),
     owner,
-    ip,
     since: T0,
     x: 0,
     y: 0,
@@ -121,22 +120,23 @@ describe("admire", () => {
 });
 
 describe("star（配信）", () => {
-  it("配る星には保存専用の born / origin / v が入らない", () => {
+  it("配る星には保存専用の born / v が入らない", () => {
     const { room, log } = fakeRoom();
-    dispatch(room, member("alice", "ipA"), { t: "star", id: "s1", x: 1, y: 2, c: 3 });
+    dispatch(room, member("alice"), { t: "star", id: "s1", x: 1, y: 2, c: 3 });
     expect(log.all).toEqual([{ t: "star", id: "s1", x: 1, y: 2, c: 3, by: "alice", ts: T0 }]);
   });
 });
 
-describe("star（同じ接続元の上限）", () => {
-  it("同じ接続元の星が maxStarsPerIp に達したら、持ち主が違っても reject", () => {
+describe("star（1 人あたりの上限）", () => {
+  it("持ち主の星が maxStarsPerUser に達したら reject（別の持ち主は置ける）", () => {
     const { room, log } = fakeRoom();
-    const owners = Array.from({ length: 4 }, (_, i) => member(`owner${i}`, "ipA"));
-    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) {
-      dispatch(room, owners[i % 4], { t: "star", id: `s${i}`, x: i, y: 0, c: 0 });
-    }
+    const alice = member("alice");
+    for (let i = 0; i < LIMITS.maxStarsPerUser; i++)
+      dispatch(room, alice, { t: "star", id: `s${i}`, x: i, y: 0, c: 0 });
     expect(log.sent).toEqual([]);
-    dispatch(room, owners[0], { t: "star", id: "over", x: 0, y: 1, c: 0 });
+    dispatch(room, alice, { t: "star", id: "over", x: 0, y: 1, c: 0 });
     expect(log.sent).toEqual([{ t: "reject", kind: "star", id: "over" }]);
+    dispatch(room, member("bob"), { t: "star", id: "bob1", x: 0, y: 2, c: 0 });
+    expect(log.sent).toHaveLength(1);
   });
 });

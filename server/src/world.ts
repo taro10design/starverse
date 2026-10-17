@@ -12,9 +12,8 @@ import { crowdCounts } from "./spatial";
 const STORE_VERSION = 2;
 
 // 保存先の星。配る StarData に、サーバーだけが使う情報を足したもの（ハイバネート・再起動で失わないように保存する）
-// - born: 作成時刻（ms）。きらめきで延ばせる寿命の上限と、接続元ごとの星の数（直近の窓）に使う
-// - origin: 置いた接続元の鍵（HMAC）。分からなければ空文字
-export type StoredStar = StarData & { born: number; origin: string; v: typeof STORE_VERSION };
+// - born: 作成時刻（ms）。きらめきで延ばせる寿命の上限に使う
+export type StoredStar = StarData & { born: number; v: typeof STORE_VERSION };
 export type StoredLink = LinkData & { v: typeof STORE_VERSION };
 
 // 永続化すべき変更。キーは `s:<id>`（星）/ `l:<id>`（線）
@@ -31,7 +30,7 @@ export interface PruneResult {
 const starKey = (id: string) => `s:${id}`;
 const linkKey = (id: string) => `l:${id}`;
 
-// クライアントへ配る形（保存専用の born / origin / v を除く）
+// クライアントへ配る形（保存専用の born / v を除く）
 export function toWire(s: StoredStar): StarData {
   return { id: s.id, x: s.x, y: s.y, c: s.c, by: s.by, ts: s.ts };
 }
@@ -52,8 +51,7 @@ function isStoredStar(v: unknown): v is StoredStar {
     isStr(v.by) &&
     OWNER_ID_PATTERN.test(v.by) &&
     isNum(v.ts) &&
-    isNum(v.born) &&
-    isStr(v.origin)
+    isNum(v.born)
   );
 }
 
@@ -84,18 +82,9 @@ export class World {
   // --- 星 ---
 
   // 星を置く。上限超え・他人の星の上書きは null。戻り値は配る形（toWire 済み）。
-  // 持ち主が同じ id で置き直したときは位置・色だけを変え、born と ts（寿命）・origin は据え置く。
+  // 持ち主が同じ id で置き直したときは位置・色だけを変え、born と ts（寿命）は据え置く。
   // 幽霊の復活は、星が一度消えたあとなので新しい星として扱う（born / ts は今）。
-  // origin は置いた接続元の鍵。同じ接続元が直近 ipStarWindowMs に置いた星を合わせて数える。分からなければ null で、数えない
-  placeStar(
-    owner: string,
-    id: string,
-    x: number,
-    y: number,
-    c: number,
-    now: number,
-    origin: string | null = null,
-  ): StarData | null {
+  placeStar(owner: string, id: string, x: number, y: number, c: number, now: number): StarData | null {
     const existing = this.stars.get(id);
     if (existing) {
       if (existing.by !== owner) return null; // 他人の星は上書きできない
@@ -104,14 +93,9 @@ export class World {
       this.markPut(starKey(id));
       return toWire(moved);
     }
-    if (
-      this.stars.size >= LIMITS.maxStars ||
-      (this.starsByOwner.get(owner) ?? 0) >= LIMITS.maxStarsPerUser ||
-      (origin !== null && this.recentFromOrigin(origin, now) >= LIMITS.maxStarsPerIp)
-    ) {
+    if (this.stars.size >= LIMITS.maxStars || (this.starsByOwner.get(owner) ?? 0) >= LIMITS.maxStarsPerUser)
       return null;
-    }
-    const star: StoredStar = { id, x, y, c, by: owner, ts: now, born: now, origin: origin ?? "", v: STORE_VERSION };
+    const star: StoredStar = { id, x, y, c, by: owner, ts: now, born: now, v: STORE_VERSION };
     this.putStar(star);
     return toWire(star);
   }
@@ -241,13 +225,6 @@ export class World {
     this.bump(this.starsByOwner, star.by, 1);
     this.stars.set(star.id, star);
     if (track) this.markPut(starKey(star.id));
-  }
-
-  // 同じ接続元が直近 ipStarWindowMs に置いて、まだ残っている星の数（星は maxStars 以下なので毎回数える）
-  private recentFromOrigin(origin: string, now: number): number {
-    let n = 0;
-    for (const s of this.stars.values()) if (s.origin === origin && now - s.born < LIMITS.ipStarWindowMs) n++;
-    return n;
   }
 
   private deleteStar(star: StoredStar): string[] {

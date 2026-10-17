@@ -9,7 +9,7 @@ const OWNER = "0123456789abcdef0123456789abcdef"; // 保存済みデータの持
 // 保存先のレコード（storage.list が返す [鍵, 値] の形）
 const sRec = (id: string, extra: Partial<StoredStar> = {}): [string, StoredStar] => [
   `s:${id}`,
-  { id, x: 0, y: 0, c: 0, by: OWNER, ts: T0, born: T0, origin: "", v: 2, ...extra },
+  { id, x: 0, y: 0, c: 0, by: OWNER, ts: T0, born: T0, v: 2, ...extra },
 ];
 const lRec = (id: string, a: string, b: string, extra: Partial<StoredLink> = {}): [string, StoredLink] => [
   `l:${id}`,
@@ -67,9 +67,9 @@ describe("World: 星", () => {
     expect(w.admire("nope", at)).toBeNull();
   });
 
-  it("配る星（戻り値・snapshot）には保存専用の born / origin / v が入らない", () => {
+  it("配る星（戻り値・snapshot）には保存専用の born / v が入らない", () => {
     const w = new World();
-    const s = w.placeStar("alice", "s1", 0, 0, 0, T0, "ipA");
+    const s = w.placeStar("alice", "s1", 0, 0, 0, T0);
     expect(s).toEqual({ id: "s1", x: 0, y: 0, c: 0, by: "alice", ts: T0 });
     w.placeStar("alice", "s2", 1, 1, 0, T0);
     w.addLink("alice", "l1", "s1", "s2", T0);
@@ -82,10 +82,10 @@ describe("World: 星", () => {
 
   it("持ち主の置き直しは位置・色だけ変え、born と ts は据え置く", () => {
     const w = new World();
-    w.placeStar("alice", "s1", 0, 0, 0, T0, "ipA");
+    w.placeStar("alice", "s1", 0, 0, 0, T0);
     w.admire("s1", T0 + LIMITS.admireMinIntervalMs);
     w.drainChanges();
-    const again = w.placeStar("alice", "s1", 5, 6, 2, T0 + LIMITS.admireMinIntervalMs + 5000, "ipB");
+    const again = w.placeStar("alice", "s1", 5, 6, 2, T0 + LIMITS.admireMinIntervalMs + 5000);
     expect(again).toEqual({ id: "s1", x: 5, y: 6, c: 2, by: "alice", ts: T0 + LIMITS.admireMinIntervalMs });
     expect(w.drainChanges().put["s:s1"]).toEqual({
       id: "s1",
@@ -95,7 +95,6 @@ describe("World: 星", () => {
       by: "alice",
       ts: T0 + LIMITS.admireMinIntervalMs,
       born: T0,
-      origin: "ipA",
       v: 2,
     });
   });
@@ -204,65 +203,6 @@ describe("World: 寿命（prune）", () => {
   });
 });
 
-describe("World: 同じ接続元（IP）が置ける星の合計", () => {
-  it("同じ接続元の星は、持ち主が違っても合わせて maxStarsPerIp まで", () => {
-    const w = new World();
-    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) {
-      const owner = `owner${i % 4}`; // 4 人の持ち主に分けても
-      expect(w.placeStar(owner, `s${i}`, i, 0, 0, T0, "ipA")).not.toBeNull();
-    }
-    expect(w.placeStar("owner9", "over", 0, 0, 0, T0, "ipA")).toBeNull();
-    expect(w.placeStar("owner9", "other", 0, 0, 0, T0, "ipB")).not.toBeNull(); // 別の接続元は置ける
-    expect(w.placeStar("owner9", "local", 0, 0, 0, T0, null)).not.toBeNull(); // 接続元が分からないときは数えない
-  });
-
-  it("星が消えると（消す・寿命）、その接続元の枠が空く", () => {
-    const w = new World();
-    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) w.placeStar(`o${i % 4}`, `s${i}`, i, 0, 0, T0, "ipA");
-    w.removeStar("s0");
-    expect(w.placeStar("o0", "again", 0, 0, 0, T0, "ipA")).not.toBeNull();
-    expect(w.placeStar("o0", "again2", 0, 0, 0, T0, "ipA")).toBeNull();
-    w.prune(T0 + STAR_TTL + 1, true); // 全部寿命で消える
-    expect(w.placeStar("o0", "fresh", 0, 0, 0, T0 + STAR_TTL + 2, "ipA")).not.toBeNull();
-  });
-
-  it("数えるのは直近 ipStarWindowMs に置いた星だけ（それより前の星は残っていても数えない）", () => {
-    const w = new World();
-    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) w.placeStar(`o${i % 4}`, `s${i}`, i, 0, 0, T0, "ipA");
-    expect(w.placeStar("o0", "over", 0, 1, 0, T0 + LIMITS.ipStarWindowMs - 1, "ipA")).toBeNull();
-    expect(w.placeStar("o0", "later", 0, 1, 0, T0 + LIMITS.ipStarWindowMs, "ipA")).not.toBeNull();
-    expect(w.stars.has("s0")).toBe(true); // 古い星は消さない（数えないだけ）
-  });
-
-  it("読み込んだ星も、保存された origin と born で数える（再起動で枠が戻らない）", () => {
-    const w = new World();
-    const owner = (i: number) => OWNER.slice(0, 31) + String(i % 4); // 持ち主ごとの上限に掛からないよう 4 人に分ける
-    const recs = Array.from({ length: LIMITS.maxStarsPerIp }, (_, i) =>
-      sRec(`s${i}`, { x: i, by: owner(i), origin: "ipA" }),
-    );
-    w.load(recs, []);
-    expect(w.stars.size).toBe(LIMITS.maxStarsPerIp);
-    const fresh = "f".repeat(32);
-    expect(w.placeStar(fresh, "over", 0, 1, 0, T0 + 1, "ipA")).toBeNull();
-    expect(w.placeStar(fresh, "other", 0, 1, 0, T0 + 1, "ipB")).not.toBeNull();
-  });
-
-  it("置いた星には born と origin を保存する（接続元が分からなければ空文字）", () => {
-    const w = new World();
-    w.placeStar("alice", "a", 0, 0, 0, T0, "ipA");
-    w.placeStar("alice", "b", 0, 0, 0, T0 + 1);
-    const put = w.drainChanges().put;
-    expect(put["s:a"]).toEqual({ id: "a", x: 0, y: 0, c: 0, by: "alice", ts: T0, born: T0, origin: "ipA", v: 2 });
-    expect(put["s:b"]).toMatchObject({ born: T0 + 1, origin: "", v: 2 });
-  });
-
-  it("自分の星の置き直しは、新しい星として数えない", () => {
-    const w = new World();
-    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) w.placeStar(`o${i % 4}`, `s${i}`, i, 0, 0, T0, "ipA");
-    expect(w.placeStar("o0", "s0", 5, 5, 1, T0 + 1, "ipA")).not.toBeNull();
-  });
-});
-
 describe("World: きらめきで延びる寿命の上限", () => {
   it("作成から maxStarAgeMs を過ぎた星は、きらめいても寿命が延びない", () => {
     const w = new World();
@@ -324,6 +264,12 @@ describe("World: 永続化", () => {
     expect(w.stars.size).toBe(2);
     expect(w.links.size).toBe(1);
     expect(w.drainChanges()).toEqual({ put: {}, del: [] });
+  });
+
+  it("置いた星には born と v: 2 を保存する（接続元は保存しない）", () => {
+    const w = new World();
+    w.placeStar("alice", "a", 0, 0, 0, T0);
+    expect(w.drainChanges().put["s:a"]).toEqual({ id: "a", x: 0, y: 0, c: 0, by: "alice", ts: T0, born: T0, v: 2 });
   });
 
   it("線も v: 2 をつけて保存する", () => {

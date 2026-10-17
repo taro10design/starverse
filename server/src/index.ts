@@ -2,6 +2,7 @@
 // /ws は「空」（Durable Object）へ振り分け、/stats は観測用、それ以外は静的ファイルを返す。
 // 部屋の実装は room.ts、世界のルールは world.ts。
 
+import { getServerByName } from "partyserver";
 import { LIMITS, roomName } from "./config";
 import type { Env } from "./env";
 import { safeEqual } from "./identity";
@@ -10,10 +11,11 @@ export { Universe } from "./room";
 
 // 満員の空は飛ばして、空きのある最初の空に入れる。
 // 先頭の "space" は従来どおりの名前なので、既存の星もそのまま引き継がれる。
-// 満員以外の 503（同じ接続元からの多重接続など）は、次の空に回さずそのまま返す。
+// 満員（x-room-full）以外の応答は、次の空に回さずそのまま返す。
+// 同じ接続元ごとの接続数・頻度の制限は、Worker ではなく Cloudflare のエッジのレート制限ルールで行う（ADR 0009）。
 async function connect(request: Request, env: Env): Promise<Response> {
   for (let i = 0; i < LIMITS.maxRooms; i++) {
-    const room = env.UNIVERSE.get(env.UNIVERSE.idFromName(roomName(i)));
+    const room = await getServerByName(env.UNIVERSE, roomName(i));
     const res = await room.fetch(request.clone());
     if (!(res.status === 503 && res.headers.get("x-room-full"))) return res;
   }
@@ -36,7 +38,7 @@ async function stats(env: Env): Promise<Response> {
   // 空いている空の先にも人がいることがある（途中の空が空いた場合）ので、全部を順に見る
   const rooms = [];
   for (let i = 0; i < LIMITS.maxRooms; i++) {
-    const room = env.UNIVERSE.get(env.UNIVERSE.idFromName(roomName(i)));
+    const room = await getServerByName(env.UNIVERSE, roomName(i));
     const data = (await (await room.fetch("https://room/stats")).json()) as { connections: number };
     rooms.push({ room: roomName(i), ...data });
   }

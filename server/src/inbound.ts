@@ -16,7 +16,11 @@ const BASE_COST = 1; // 読む前に取る分
 export type RawVerdict = "accept" | "discard" | "close";
 
 // accept なら読んでよい。discard は黙って捨てる。close はあふれ続けているので切断する
-export function screenRaw(message: string | ArrayBuffer, bucket: TokenBucket, now: number): RawVerdict {
+export function screenRaw(
+  message: string | ArrayBuffer | ArrayBufferView,
+  bucket: TokenBucket,
+  now: number,
+): RawVerdict {
   if (!bucket.take(BASE_COST, now)) return isFlooding(bucket, now) ? "close" : "discard";
   if (typeof message !== "string" || message.length > LIMITS.maxMessageBytes) return "discard";
   return "accept";
@@ -50,6 +54,19 @@ export function classify(isMember: boolean, raw: string): Step {
   if (msg === null) return { do: "ignore" }; // 読めないもの。トークンは screenRaw で取っている
   if (msg === INVALID_HELLO || msg.t === "hello") return { do: "violation" }; // 持ち主は接続につき 1 つに固定する
   return { do: "dispatch", msg };
+}
+
+// hello の締め切りを過ぎたか（接続した時刻 since から helloTimeoutMs）
+export function helloExpired(since: number, now: number): boolean {
+  return now - since >= LIMITS.helloTimeoutMs;
+}
+
+// 次の alarm の時刻。hello を待っている接続（waiting は接続した時刻）があれば、その締め切りに合わせて早める。
+// 締め切りを過ぎていても 1 秒は空ける（alarm の連打を避ける）
+export function nextAlarmAt(now: number, waiting: Iterable<number>): number {
+  let at = now + LIMITS.pruneIntervalMs;
+  for (const since of waiting) at = Math.min(at, Math.max(now + 1000, since + LIMITS.helloTimeoutMs));
+  return at;
 }
 
 // 手順の違反を数える。通算で数え、減らさない（間に正しいメッセージがあっても）。limit 回目で true（切断する）

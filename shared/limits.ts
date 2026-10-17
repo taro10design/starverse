@@ -10,3 +10,8 @@ export const UID_PATTERN = /^[\w-]{8,64}$/;
 // サーバーが作る持ち主 ID（uid の SHA-256 の先頭 32 文字の 16 進数）。
 // これに合わない `by` は、uid が混ざっている可能性があるので、読み込み時に捨てる
 export const OWNER_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+// ワールド座標の絶対値の上限。これを超える座標のメッセージは無視する
+export const COORD_MAX = 10_000;
+// 星・線の id の長さの上限。長い id は切り詰める（uid は切り詰めない。UID_PATTERN で検証する）
+export const ID_MAX_LENGTH = 24;

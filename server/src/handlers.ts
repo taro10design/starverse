@@ -8,12 +8,11 @@ import type { ViolationCounter } from "./inbound";
 import type { Cooldown, TokenBucket } from "./rate-limit";
 import type { World } from "./world";
 
-// 1本の接続（1人ぶんの状態）
+// 1本の接続（1人ぶんの状態）。メモリ上の実行時の状態で、ハイバネートを越えて残す分は room.ts が接続の state に書く
 export interface Conn {
   ws: WebSocket;
-  id: string;
+  id: string; // 配信に使う短い id（PartyServer の connection.id とは別）
   owner: string | null; // 持ち主 ID（uid のハッシュ）。hello を受けるまでは null
-  ip: string | null; // 接続元の鍵（HMAC。同じ接続元の接続数・星の数を数える用）。分からなければ null
   since: number; // 接続した時刻（hello の待ち時間の判定用）
   x: number;
   y: number;
@@ -23,7 +22,7 @@ export interface Conn {
   bucket: TokenBucket;
   violations: ViolationCounter; // 手順の違反（hello 前の hello 以外、2 回目以降の hello）
   admired: Cooldown; // この接続が星ごとに最後にきらめかせた時刻（星ごとの全体の間隔は World が持つ）
-  attachedAt: number; // 最後に永続属性（ハイバネート用）へ書いた時刻
+  attachedAt: number; // 最後に接続の state（ハイバネート用）へ書いた時刻
 }
 
 // hello を済ませて持ち主が決まった接続
@@ -39,7 +38,7 @@ export interface RoomApi {
   readonly world: World;
   now(): number;
   send(conn: Conn, msg: ServerMessage): void;
-  broadcast(msg: ServerMessage, except?: Conn): void;
+  broadcastAll(msg: ServerMessage, except?: Conn): void; // PartyServer の Server.broadcast とは別（hello 済みの人だけ）
   broadcastNear(msg: ServerMessage, x: number, y: number, opts?: BroadcastOptions): void;
   markDirty(conn: Conn): void;
   persist(): void;
@@ -83,20 +82,20 @@ const handlers: { [K in MemberMessageType]: Handler<K> } = {
 
   star(room, conn, m) {
     room.prune();
-    const star = room.world.placeStar(conn.owner, m.id, m.x, m.y, m.c, room.now(), conn.ip);
+    const star = room.world.placeStar(conn.owner, m.id, m.x, m.y, m.c, room.now());
     if (!star) {
-      room.send(conn, { t: "reject", kind: "star", id: m.id }); // 上限超え（全体・持ち主・接続元）・他人の星の上書き
+      room.send(conn, { t: "reject", kind: "star", id: m.id }); // 上限超え（全体・持ち主）・他人の星の上書き
       return;
     }
-    room.broadcast({ t: "star", ...star }, conn);
+    room.broadcastAll({ t: "star", ...star }, conn);
     room.persist();
   },
 
   unstar(room, conn, m) {
     const removed = room.world.removeStar(m.id);
     if (!removed) return;
-    room.broadcast({ t: "unstar", id: removed.star.id }, conn);
-    for (const id of removed.links) room.broadcast({ t: "unlink", id }); // 端が消えたら線も消える
+    room.broadcastAll({ t: "unstar", id: removed.star.id }, conn);
+    for (const id of removed.links) room.broadcastAll({ t: "unlink", id }); // 端が消えたら線も消える
     room.persist();
   },
 
@@ -108,7 +107,7 @@ const handlers: { [K in MemberMessageType]: Handler<K> } = {
     if (!room.world.stars.has(m.id) || !conn.admired.allow(m.id, now)) return;
     const star = room.world.admire(m.id, now); // 間隔内・作成から maxStarAgeMs を過ぎた星は延びない
     if (!star) return;
-    room.broadcast({ t: "admire", id: star.id, ts: star.ts });
+    room.broadcastAll({ t: "admire", id: star.id, ts: star.ts });
     room.persist();
   },
 
@@ -119,13 +118,13 @@ const handlers: { [K in MemberMessageType]: Handler<K> } = {
       room.send(conn, { t: "reject", kind: "link", id: m.id }); // 上限超え・無効な端・同じ 2 点の重複
       return;
     }
-    room.broadcast({ t: "link", ...link }, conn);
+    room.broadcastAll({ t: "link", ...link }, conn);
     room.persist();
   },
 
   unlink(room, conn, m) {
     if (!room.world.removeLink(m.id, conn.owner)) return; // 線は持ち主だけが消せる
-    room.broadcast({ t: "unlink", id: m.id }, conn);
+    room.broadcastAll({ t: "unlink", id: m.id }, conn);
     room.persist();
   },
 };

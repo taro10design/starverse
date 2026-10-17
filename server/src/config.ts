@@ -1,5 +1,6 @@
 // サーバーの調整値。負荷や荒らしの傾向を見て、ここだけ触れば済むようにしておく。
-// クライアントと同じ値を使うもの（1 人あたりの上限・色の数・uid の形式）は shared/limits.ts にある。
+// クライアントと同じ値を使うもの（1 人あたりの上限・色の数・uid の形式・座標と id の範囲）は shared/limits.ts にある。
+// 同じ接続元（IP）ごとの制限は、ここではなく Cloudflare のエッジのレート制限ルールで行う（ADR 0009）。
 
 import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER } from "../../shared/limits";
 
@@ -12,11 +13,6 @@ export const LIMITS = {
 
   // --- 部屋（空）のスケール ---
   roomCapacity: 300, // 1つの空に入れる人数。超えたら次の空へ振り分ける
-  maxConnsPerIp: 4, // 1つの空に同じ接続元から入れる数。超えたら断る（次の空には回さない）
-  maxConnectsPerIpPerMinute: 12, // 1つの空に同じ接続元がつなぎ直せる回数（直近 60 秒）。超えたら 503
-  maxStarsPerIp: 128, // 同じ接続元が直近 ipStarWindowMs に置いた星の数（持ち主を変えても合わせて数える）
-  ipStarWindowMs: 10 * 60 * 1000, // maxStarsPerIp で数える期間。星の born（作成時刻）で判定する
-  maxTrackedIps: 10_000, // 接続の頻度を覚えておく接続元の数（メモリの上限）
   maxRooms: 8, // 振り分け先の空の数（space, space-2, ...）
 
   // --- 受信量の予算 ---
@@ -46,7 +42,6 @@ export const LIMITS = {
 
   // --- 入力の制限 ---
   maxMessageBytes: 512,
-  coordMax: 10_000, // ワールド座標の絶対値の上限
   helloTimeoutMs: 10_000, // 接続してからこの時間内に hello が来なければ切断する
   maxBacklogWhileIdentifying: 32, // hello のハッシュ計算中に届いたメッセージを貯めておく数
   maxRejectsWhileIdentifying: 256, // 貯めきれなかった星・線の reject を、welcome のあとに返す数

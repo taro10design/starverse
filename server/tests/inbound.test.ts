@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { COST, LIMITS, RATE } from "../src/config";
-import { IdentifyBacklog, ViolationCounter, classify, extraCost, screenRaw } from "../src/inbound";
+import {
+  IdentifyBacklog,
+  ViolationCounter,
+  classify,
+  extraCost,
+  helloExpired,
+  nextAlarmAt,
+  screenRaw,
+} from "../src/inbound";
 import { TokenBucket } from "../src/rate-limit";
 
 const UID = "abcdef12-3456-7890-abcd-ef1234567890";
@@ -141,5 +149,29 @@ describe("IdentifyBacklog（hello の処理中に届いたメッセージ）", (
     const q = new IdentifyBacklog(0, 2);
     for (let i = 0; i < 5; i++) q.push(json({ t: "star", id: `s${i}`, x: 0, y: 0, c: 0 }));
     expect(q.rejects).toHaveLength(2);
+  });
+});
+
+describe("hello の締め切り", () => {
+  it("接続から helloTimeoutMs を過ぎたら締め切り", () => {
+    expect(helloExpired(0, LIMITS.helloTimeoutMs - 1)).toBe(false);
+    expect(helloExpired(0, LIMITS.helloTimeoutMs)).toBe(true);
+  });
+
+  it("次の alarm: hello を待つ接続が無ければ pruneIntervalMs 後", () => {
+    expect(nextAlarmAt(1000, [])).toBe(1000 + LIMITS.pruneIntervalMs);
+  });
+
+  it("次の alarm: hello を待つ接続があれば、いちばん早い締め切りに早める（ただし 1 秒より先）", () => {
+    expect(nextAlarmAt(5000, [4000, 2000])).toBe(2000 + LIMITS.helloTimeoutMs);
+    expect(nextAlarmAt(50_000, [0])).toBe(51_000); // 締め切りを過ぎていても、すぐには鳴らさない
+  });
+});
+
+describe("screenRaw（バイナリ）", () => {
+  it("ArrayBufferView も文字列でないので捨てる（トークンは使う）", () => {
+    const b = new TokenBucket(1, 0, 0, LIMITS.rateWindowMs);
+    expect(screenRaw(new Uint8Array(2), b, 0)).toBe("discard");
+    expect(screenRaw("{}", b, 0)).toBe("discard");
   });
 });
