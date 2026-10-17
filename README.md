@@ -4,7 +4,7 @@
 
 **https://uchu.pages.dev**
 
-![宇宙のスクリーンショット](public/ogp-preview.png)
+![宇宙のスクリーンショット](client/public/ogp-preview.png)
 
 複数の端末から同じ空を見て、互いの光（カーソル）が見える共有キャンバスです。星を灯し、星どうしを線で結んで星座を作れます。文字や会話の機能は意図的に無く、「同じ空にいる」ことだけを体験にしています。
 
@@ -28,8 +28,20 @@
 
 - **フロントエンド**: TypeScript + Canvas 2D（Vite でビルド、ライブラリ依存なし）
 - **バックエンド**: TypeScript + Cloudflare Workers + Durable Objects
-- **共通**: WebSocket のメッセージ型を [src/shared/protocol.ts](src/shared/protocol.ts) でクライアントとサーバーが共有
+- **共通**: WebSocket のメッセージ型を [shared/protocol.ts](shared/protocol.ts) でクライアントとサーバーが共有
 - **配信**: Cloudflare Pages
 - **機能**: リアルタイム同期（WebSocket）、永続化（SQLite）、スパム対策（密度ルール）
 
-[技術詳細はこちら](docs/architecture.md)
+## ドキュメント
+
+- [アーキテクチャ](docs/architecture.md): 構成、スケールのための設計、負荷テストの結果
+- [拡張ガイド](docs/extending.md): メッセージやツールを足す手順
+- [TODO](docs/TODO.md): 未完了のこと・次にやること
+
+## 開発
+
+```bash
+npm install
+npm run dev:server   # Worker + 静的ファイルをローカルで起動（http://localhost:8787）
+npm run typecheck && npm test && npm run build
+```
