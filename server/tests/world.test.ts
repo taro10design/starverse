@@ -17,7 +17,7 @@ describe("World: 星", () => {
     const w = new World();
     w.placeStar("alice", "s1", 0, 0, 0, T0);
     expect(w.placeStar("mallory", "s1", 9, 9, 0, T0)).toBeNull();
-    expect(w.stars.get("s1")!.by).toBe("alice");
+    expect(w.stars.get("s1")?.by).toBe("alice");
   });
 
   it("持ち主は自分の星を同じ id で置き直せる（幽霊の復活）", () => {
@@ -51,7 +51,7 @@ describe("World: 星", () => {
     const w = new World();
     w.placeStar("alice", "s1", 0, 0, 0, T0);
     w.admire("s1", T0 + 1000);
-    expect(w.stars.get("s1")!.ts).toBe(T0 + 1000);
+    expect(w.stars.get("s1")?.ts).toBe(T0 + 1000);
     expect(w.admire("nope", T0)).toBeNull();
   });
 });
@@ -92,8 +92,8 @@ describe("World: 線", () => {
     const w = setup();
     w.addLink("alice", "l1", "a", "b", T0);
     w.addLink("alice", "l2", "b", "c", T0);
-    const r = w.removeStar("b")!;
-    expect(r.links.sort()).toEqual(["l1", "l2"]);
+    const r = w.removeStar("b");
+    expect(r?.links.sort()).toEqual(["l1", "l2"]);
     expect(w.links.size).toBe(0);
   });
 });

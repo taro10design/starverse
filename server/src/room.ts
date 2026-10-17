@@ -46,7 +46,6 @@ export class Universe implements RoomApi, DurableObject {
     // アプリ層の ping には、Durable Object を起こさずに pong を返す（死活監視用）
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.ctx.blockConcurrencyWhile(async () => {
-      await this.migrateLegacy();
       const stars = await this.ctx.storage.list<StarData>({ prefix: "s:" });
       const links = await this.ctx.storage.list<LinkData>({ prefix: "l:" });
       this.world.load(stars.values(), links.values());
@@ -83,7 +82,14 @@ export class Universe implements RoomApi, DurableObject {
       if (dots.length >= LIMITS.maxWelcomePeers) break;
     }
     this.updateRate();
-    this.send(conn, { t: "welcome", id, sendMs: this.sendMs, dots, stars: [...this.world.stars.values()], links: [...this.world.links.values()] });
+    this.send(conn, {
+      t: "welcome",
+      id,
+      sendMs: this.sendMs,
+      dots,
+      stars: [...this.world.stars.values()],
+      links: [...this.world.links.values()],
+    });
     this.markDirty(conn); // 他の人に新しい光を知らせる
     await this.ensureAlarm();
 
@@ -260,8 +266,10 @@ export class Universe implements RoomApi, DurableObject {
     if (!v) return all;
     const mx = (v[2] - v[0]) * LIMITS.viewMargin;
     const my = (v[3] - v[1]) * LIMITS.viewMargin;
-    const cx0 = Math.floor((v[0] - mx) / CELL), cx1 = Math.floor((v[2] + mx) / CELL);
-    const cy0 = Math.floor((v[1] - my) / CELL), cy1 = Math.floor((v[3] + my) / CELL);
+    const cx0 = Math.floor((v[0] - mx) / CELL),
+      cx1 = Math.floor((v[2] + mx) / CELL);
+    const cy0 = Math.floor((v[1] - my) / CELL),
+      cy1 = Math.floor((v[3] + my) / CELL);
     if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > grid.size) return all;
     const out: T[] = [];
     for (let cx = cx0; cx <= cx1; cx++) {
@@ -313,7 +321,17 @@ export class Universe implements RoomApi, DurableObject {
 
   private makeConn(ws: WebSocket, s: Session): Conn {
     const now = Date.now();
-    return { ws, id: s.id, x: s.x, y: s.y, c: s.c, view: null, dirty: false, bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, now), attachedAt: now };
+    return {
+      ws,
+      id: s.id,
+      x: s.x,
+      y: s.y,
+      c: s.c,
+      view: null,
+      dirty: false,
+      bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, now),
+      attachedAt: now,
+    };
   }
 
   private drop(ws: WebSocket) {
@@ -332,27 +350,13 @@ export class Universe implements RoomApi, DurableObject {
   private sendRaw(conn: Conn, out: string) {
     try {
       conn.ws.send(out);
-    } catch {}
+    } catch {
+      // 既に閉じている接続には送れない。close イベントで片付く
+    }
   }
 
   private async ensureAlarm() {
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + LIMITS.pruneIntervalMs);
-  }
-
-  // 旧形式（星・線を1つの配列で保存）から、1件1キーの形式へ移す
-  private async migrateLegacy() {
-    const stars = await this.ctx.storage.get<StarData[]>("stars");
-    const links = await this.ctx.storage.get<LinkData[]>("links");
-    if (!stars && !links) return;
-    const entries: Record<string, unknown> = {};
-    for (const s of stars ?? []) entries[`s:${s.id}`] = s;
-    for (const l of links ?? []) entries[`l:${l.id}`] = l;
-    const keys = Object.keys(entries);
-    for (let i = 0; i < keys.length; i += 128) {
-      const chunk: Record<string, unknown> = {};
-      for (const k of keys.slice(i, i + 128)) chunk[k] = entries[k];
-      await this.ctx.storage.put(chunk);
-    }
-    await this.ctx.storage.delete(["stars", "links"]);
+    if ((await this.ctx.storage.getAlarm()) === null)
+      await this.ctx.storage.setAlarm(Date.now() + LIMITS.pruneIntervalMs);
   }
 }

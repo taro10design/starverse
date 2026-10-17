@@ -24,7 +24,11 @@ describe("crowdCounts", () => {
   });
 
   it("全探索と同じ結果になる", () => {
-    const pts = Array.from({ length: 300 }, (_, i) => ({ id: `p${i}`, x: Math.random() * 0.5, y: Math.random() * 0.5 }));
+    const pts = Array.from({ length: 300 }, (_, i) => ({
+      id: `p${i}`,
+      x: Math.random() * 0.5,
+      y: Math.random() * 0.5,
+    }));
     const r = 0.06;
     const fast = crowdCounts(pts, r);
     for (const p of pts) {

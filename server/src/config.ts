@@ -25,7 +25,7 @@ export const LIMITS = {
     [100, 100],
     [200, 150],
     [Number.POSITIVE_INFINITY, 250],
-  ] as ReadonlyArray<readonly [number, number]>,
+  ] as readonly (readonly [number, number])[],
   coarseEveryTicks: 20, // 視界外も含めた粗い一覧を送る間隔（= 2秒）
   idleTicksBeforeSleep: 30, // 動きが無い状態がこの回数続いたらタイマーを止める（ハイバネート可能にする）
   viewMargin: 0.3, // 視界の外側にこの割合だけ余白を持たせて配信する

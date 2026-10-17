@@ -18,8 +18,8 @@ export interface PruneResult {
   links: string[]; // 消えた線（星の消滅に巻き込まれたものを含む）
 }
 
-export const starKey = (id: string) => `s:${id}`;
-export const linkKey = (id: string) => `l:${id}`;
+const starKey = (id: string) => `s:${id}`;
+const linkKey = (id: string) => `l:${id}`;
 
 export class World {
   readonly stars = new Map<string, StarData>();
@@ -71,10 +71,11 @@ export class World {
     if (this.links.has(id)) return null;
     // 同じ2点を結ぶ線は1本だけ
     for (const lid of this.linksByStar.get(a) ?? []) {
-      const l = this.links.get(lid)!;
-      if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return null;
+      const l = this.links.get(lid);
+      if (l && ((l.a === a && l.b === b) || (l.a === b && l.b === a))) return null;
     }
-    if (this.links.size >= LIMITS.maxLinks || (this.linksByOwner.get(owner) ?? 0) >= LIMITS.maxLinksPerUser) return null;
+    if (this.links.size >= LIMITS.maxLinks || (this.linksByOwner.get(owner) ?? 0) >= LIMITS.maxLinksPerUser)
+      return null;
 
     const link: LinkData = { id, a, b, by: owner, ts: now };
     this.putLink(link);

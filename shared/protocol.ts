@@ -1,8 +1,8 @@
 // クライアントとサーバーが共有する WebSocket プロトコルの型。
 // 短い名前は通信量を抑えるため（p = position, c = color index, v = view, ps = presences）。
 //
-// メッセージを足すとき: ここに型を足す → サーバーは src/server/handlers.ts、
-// クライアントは src/client/message-handlers.ts に処理を書く（足さないと型エラーになる）。
+// メッセージを足すとき: ここに型を足す → サーバーは server/src/handlers.ts、
+// クライアントは client/src/message-handlers.ts に処理を書く（足さないと型エラーになる）。
 // 詳しくは docs/extending.md。
 
 export interface StarData {

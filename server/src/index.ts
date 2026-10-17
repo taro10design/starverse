@@ -1,6 +1,6 @@
 // Worker のエントリーポイント。
 // /ws は「空」（Durable Object）へ振り分け、それ以外は静的ファイルを返す。
-// 部屋の実装は src/server/ 以下。
+// 部屋の実装は room.ts、世界のルールは world.ts。
 
 import { LIMITS, roomName } from "./config";
 import type { Env } from "./env";

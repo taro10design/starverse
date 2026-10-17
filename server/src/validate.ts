@@ -9,7 +9,8 @@ const coord = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= LIMITS.coordMax ? v : null;
 
 // 空でない文字列。長すぎるものは切り詰める（従来どおり）
-const str = (v: unknown, max: number): string | null => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
+const str = (v: unknown, max: number): string | null =>
+  typeof v === "string" && v.length > 0 ? v.slice(0, max) : null;
 
 const color = (v: unknown): number | null =>
   typeof v === "number" && Number.isInteger(v) && v >= 0 && v < LIMITS.maxColors ? v : null;
@@ -35,17 +36,22 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 
   switch (m.t) {
     case "p": {
-      const x = coord(m.x), y = coord(m.y), c = color(m.c);
+      const x = coord(m.x),
+        y = coord(m.y),
+        c = color(m.c);
       if (x === null || y === null) return null;
       return { t: "p", x, y, c: c ?? 0, v: view(m.v) };
     }
     case "pulse": {
-      const x = coord(m.x), y = coord(m.y);
+      const x = coord(m.x),
+        y = coord(m.y);
       if (x === null || y === null) return null;
       return { t: "pulse", x, y };
     }
     case "star": {
-      const id = str(m.id, 24), x = coord(m.x), y = coord(m.y);
+      const id = str(m.id, 24),
+        x = coord(m.x),
+        y = coord(m.y);
       if (id === null || x === null || y === null) return null;
       return { t: "star", id, x, y, uid: uid(m.uid) };
     }
@@ -58,7 +64,9 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return id === null ? null : { t: "admire", id };
     }
     case "link": {
-      const id = str(m.id, 24), a = str(m.a, 24), b = str(m.b, 24);
+      const id = str(m.id, 24),
+        a = str(m.a, 24),
+        b = str(m.b, 24);
       if (id === null || a === null || b === null) return null;
       return { t: "link", id, a, b, uid: uid(m.uid) };
     }

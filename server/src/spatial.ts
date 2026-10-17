@@ -43,7 +43,12 @@ export function crowdCounts<T extends Point & { id: string }>(items: Iterable<T>
 }
 
 // 視界 [x0,y0,x1,y1] に余白を足した範囲に点があるか。view が無ければ常に true
-export function inView(view: readonly [number, number, number, number] | null, x: number, y: number, margin: number): boolean {
+export function inView(
+  view: readonly [number, number, number, number] | null,
+  x: number,
+  y: number,
+  margin: number,
+): boolean {
   if (!view) return true;
   const [x0, y0, x1, y1] = view;
   const mx = (x1 - x0) * margin;

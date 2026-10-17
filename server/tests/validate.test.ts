@@ -3,7 +3,13 @@ import { parseClientMessage as parse } from "../src/validate";
 
 describe("parseClientMessage", () => {
   it("正しいメッセージを通す", () => {
-    expect(parse('{"t":"star","id":"abc","x":0.5,"y":0.5,"uid":"u1"}')).toEqual({ t: "star", id: "abc", x: 0.5, y: 0.5, uid: "u1" });
+    expect(parse('{"t":"star","id":"abc","x":0.5,"y":0.5,"uid":"u1"}')).toEqual({
+      t: "star",
+      id: "abc",
+      x: 0.5,
+      y: 0.5,
+      uid: "u1",
+    });
     expect(parse('{"t":"p","x":1,"y":2,"c":3,"v":[0,0,1,1]}')).toEqual({ t: "p", x: 1, y: 2, c: 3, v: [0, 0, 1, 1] });
   });
 

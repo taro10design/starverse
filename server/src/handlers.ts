@@ -34,7 +34,7 @@ type Handler<K extends ClientMessageType> = (room: RoomApi, conn: Conn, msg: Ext
 
 const owner = (conn: Conn, uid: string | undefined) => uid ?? conn.id; // 持ち主はブラウザ固有の uid（端末が主語）
 
-export const handlers: { [K in ClientMessageType]: Handler<K> } = {
+const handlers: { [K in ClientMessageType]: Handler<K> } = {
   p(room, conn, m) {
     conn.x = m.x;
     conn.y = m.y;
