@@ -43,57 +43,72 @@ function member(owner: string, ip: string | null = null): Member {
     c: 0,
     view: null,
     dirty: false,
-    bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, T0),
+    bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, T0, LIMITS.rateWindowMs),
     violations: new ViolationCounter(LIMITS.maxProtocolViolations),
     admired: new Cooldown(LIMITS.admireCooldownMs, LIMITS.admireCooldownEntries),
     attachedAt: T0,
   };
 }
 
+// 星の ts（作成・前回のきらめき）から admireMinIntervalMs 経つと、次のきらめきが通る
+const OPEN = T0 + LIMITS.admireMinIntervalMs;
+
 describe("admire", () => {
-  it("星の位置の近くにだけ知らせる（全員には配らない）", () => {
+  it("視界に関係なく全員に知らせる（視界外の人の手元で星が早く消えないように）", () => {
     const { room, log } = fakeRoom();
     room.world.placeStar("alice", "s1", 3, 4, 0, T0);
-    room.clock = T0 + 1000;
+    room.clock = OPEN;
     dispatch(room, member("bob"), { t: "admire", id: "s1" });
-    expect(log.all).toEqual([]);
-    expect(log.near).toEqual([{ msg: { t: "admire", id: "s1", ts: T0 + 1000 }, x: 3, y: 4 }]);
+    expect(log.near).toEqual([]);
+    expect(log.all).toEqual([{ t: "admire", id: "s1", ts: OPEN }]);
   });
 
-  it("同じ接続が同じ星を連打しても、admireCooldownMs に 1 回だけ寿命が延びる", () => {
+  it("星ごとの全体の間隔: 星の ts から admireMinIntervalMs の間は、別の接続からでも延ばさず配らない", () => {
+    const { room, log } = fakeRoom();
+    room.world.placeStar("alice", "s1", 0, 0, 0, T0);
+    room.clock = T0 + 1000;
+    dispatch(room, member("bob"), { t: "admire", id: "s1" }); // 作成から間もない
+    expect(log.all).toEqual([]);
+    room.clock = OPEN;
+    dispatch(room, member("carol"), { t: "admire", id: "s1" });
+    room.clock = OPEN + 1000;
+    dispatch(room, member("dave"), { t: "admire", id: "s1" });
+    expect(log.all).toEqual([{ t: "admire", id: "s1", ts: OPEN }]);
+    expect(room.world.stars.get("s1")?.ts).toBe(OPEN);
+  });
+
+  it("接続ごとの間隔も残る: 同じ接続は admireCooldownMs の間、全体の間隔が空いても通らない", () => {
     const { room, log } = fakeRoom();
     room.world.placeStar("alice", "s1", 0, 0, 0, T0);
     const bob = member("bob");
-    for (let i = 0; i < 10; i++) {
-      room.clock = T0 + i * 100;
-      dispatch(room, bob, { t: "admire", id: "s1" });
-    }
-    expect(log.near).toHaveLength(1);
-    expect(room.world.stars.get("s1")?.ts).toBe(T0);
-    room.clock = T0 + LIMITS.admireCooldownMs;
+    room.clock = OPEN - 1000;
+    dispatch(room, bob, { t: "admire", id: "s1" }); // 全体の間隔で断られるが、接続の間隔は数える
+    room.clock = OPEN;
     dispatch(room, bob, { t: "admire", id: "s1" });
-    expect(log.near).toHaveLength(2);
-    expect(room.world.stars.get("s1")?.ts).toBe(T0 + LIMITS.admireCooldownMs);
+    expect(log.all).toEqual([]);
+    dispatch(room, member("carol"), { t: "admire", id: "s1" });
+    expect(log.all).toEqual([{ t: "admire", id: "s1", ts: OPEN }]);
   });
 
-  it("別の接続・別の星は、それぞれ数える", () => {
+  it("別の星は、それぞれ数える", () => {
     const { room, log } = fakeRoom();
     room.world.placeStar("alice", "s1", 0, 0, 0, T0);
     room.world.placeStar("alice", "s2", 1, 1, 0, T0);
     const bob = member("bob");
+    room.clock = OPEN;
     dispatch(room, bob, { t: "admire", id: "s1" });
     dispatch(room, bob, { t: "admire", id: "s2" });
-    dispatch(room, member("carol"), { t: "admire", id: "s1" });
-    expect(log.near).toHaveLength(3);
+    expect(log.all).toHaveLength(2);
   });
 
   it("無い星へのきらめきは、間隔の記録に数えない", () => {
     const { room, log } = fakeRoom();
     const bob = member("bob");
+    room.clock = OPEN;
     dispatch(room, bob, { t: "admire", id: "s1" });
     room.world.placeStar("alice", "s1", 0, 0, 0, T0);
     dispatch(room, bob, { t: "admire", id: "s1" });
-    expect(log.near).toHaveLength(1);
+    expect(log.all).toHaveLength(1);
   });
 
   it("作成から maxStarAgeMs を過ぎた星は、きらめいても知らせない", () => {
@@ -101,7 +116,15 @@ describe("admire", () => {
     room.world.placeStar("alice", "s1", 0, 0, 0, T0);
     room.clock = T0 + LIMITS.maxStarAgeMs + 1;
     dispatch(room, member("bob"), { t: "admire", id: "s1" });
-    expect(log.near).toEqual([]);
+    expect(log.all).toEqual([]);
+  });
+});
+
+describe("star（配信）", () => {
+  it("配る星には保存専用の born / origin / v が入らない", () => {
+    const { room, log } = fakeRoom();
+    dispatch(room, member("alice", "ipA"), { t: "star", id: "s1", x: 1, y: 2, c: 3 });
+    expect(log.all).toEqual([{ t: "star", id: "s1", x: 1, y: 2, c: 3, by: "alice", ts: T0 }]);
   });
 });
 

@@ -14,7 +14,8 @@ export const LIMITS = {
   roomCapacity: 300, // 1つの空に入れる人数。超えたら次の空へ振り分ける
   maxConnsPerIp: 4, // 1つの空に同じ接続元から入れる数。超えたら断る（次の空には回さない）
   maxConnectsPerIpPerMinute: 12, // 1つの空に同じ接続元がつなぎ直せる回数（直近 60 秒）。超えたら 503
-  maxStarsPerIp: 128, // 同じ接続元が置いた星の合計（持ち主を変えても合わせて数える。メモリ上の近似）
+  maxStarsPerIp: 128, // 同じ接続元が直近 ipStarWindowMs に置いた星の数（持ち主を変えても合わせて数える）
+  ipStarWindowMs: 10 * 60 * 1000, // maxStarsPerIp で数える期間。星の born（作成時刻）で判定する
   maxTrackedIps: 10_000, // 接続の頻度を覚えておく接続元の数（メモリの上限）
   maxRooms: 8, // 振り分け先の空の数（space, space-2, ...）
 
@@ -53,8 +54,12 @@ export const LIMITS = {
 
   // --- きらめき（admire） ---
   admireCooldownMs: 5000, // 同じ接続が同じ星をきらめかせられる間隔
+  admireMinIntervalMs: 60_000, // 星ごとの全体の間隔。星の ts（作成・前回のきらめき）からこの時間は誰がきらめいても延びない
   admireCooldownEntries: 256, // 接続ごとに覚えておく星の数（メモリの上限）
-  maxStarAgeMs: 24 * 60 * 60 * 1000, // きらめきで寿命が延びるのは、星の作成からこの時間まで
+  maxStarAgeMs: 24 * 60 * 60 * 1000, // きらめきで寿命が延びるのは、星の作成（保存した born）からこの時間まで
+
+  // --- 受信のあふれ ---
+  rateWindowMs: 10_000, // あふれの割合を数える直近の窓（1 秒刻み）
 } as const;
 
 // 接続ごとのレート制限（トークンバケット）。コストが大きい操作ほど重い
@@ -63,7 +68,10 @@ export const RATE = {
   // 一気に送っても捨てられないよう、星 64 個ぶんのコスト（2×64）に余裕を足した値にしている
   capacity: 200,
   refillPerSec: 40, // 毎秒の回復量
-  closeAfterDrops: 200, // あふれの数（あふれで +1、通るたびに -1）がこれを超えたら切断する
+  // 直近 rateWindowMs の中で、あふれた割合が closeOverflowRatio 以上、かつあふれが closeMinDrops 以上なら切断する。
+  // 許容量の 2 倍で送り続けると、あふれの割合はちょうど 0.5 になる（「超え」では切れない）ので「以上」で判定する
+  closeOverflowRatio: 0.5,
+  closeMinDrops: 100,
 } as const;
 
 // 1 通ごとに、JSON を読む前に 1 トークン取る。読んだあとは COST との差だけ追加で取る（inbound.ts）

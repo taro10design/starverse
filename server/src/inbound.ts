@@ -17,9 +17,16 @@ export type RawVerdict = "accept" | "discard" | "close";
 
 // accept なら読んでよい。discard は黙って捨てる。close はあふれ続けているので切断する
 export function screenRaw(message: string | ArrayBuffer, bucket: TokenBucket, now: number): RawVerdict {
-  if (!bucket.take(BASE_COST, now)) return bucket.excessDrops > RATE.closeAfterDrops ? "close" : "discard";
+  if (!bucket.take(BASE_COST, now)) return isFlooding(bucket, now) ? "close" : "discard";
   if (typeof message !== "string" || message.length > LIMITS.maxMessageBytes) return "discard";
   return "accept";
+}
+
+// 切断するほどあふれているか。直近の窓で、あふれの割合が closeOverflowRatio 以上かつ closeMinDrops 通以上。
+// 割合で見るので、許容量を大きく超えて送り続ける接続は切れ、短いバーストや通常の連打では切れない
+export function isFlooding(bucket: TokenBucket, now: number): boolean {
+  const { passed, dropped } = bucket.recent(now);
+  return dropped >= RATE.closeMinDrops && dropped >= (passed + dropped) * RATE.closeOverflowRatio;
 }
 
 export function extraCost(t: MemberMessage["t"]): number {
@@ -45,7 +52,7 @@ export function classify(isMember: boolean, raw: string): Step {
   return { do: "dispatch", msg };
 }
 
-// 手順の違反を数える。limit 回目で true（切断する）
+// 手順の違反を数える。通算で数え、減らさない（間に正しいメッセージがあっても）。limit 回目で true（切断する）
 export class ViolationCounter {
   private n = 0;
 

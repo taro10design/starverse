@@ -8,9 +8,18 @@ import { CROWD_R, STAR_TTL, ttlFor } from "../../shared/rules";
 import { LIMITS } from "./config";
 import { crowdCounts } from "./spatial";
 
+// 保存先（storage）のレコードの版。形式を変えたら上げる。load は違う版のレコードを全部捨てる
+const STORE_VERSION = 2;
+
+// 保存先の星。配る StarData に、サーバーだけが使う情報を足したもの（ハイバネート・再起動で失わないように保存する）
+// - born: 作成時刻（ms）。きらめきで延ばせる寿命の上限と、接続元ごとの星の数（直近の窓）に使う
+// - origin: 置いた接続元の鍵（HMAC）。分からなければ空文字
+export type StoredStar = StarData & { born: number; origin: string; v: typeof STORE_VERSION };
+export type StoredLink = LinkData & { v: typeof STORE_VERSION };
+
 // 永続化すべき変更。キーは `s:<id>`（星）/ `l:<id>`（線）
 export interface StorageChanges {
-  put: Record<string, StarData | LinkData>;
+  put: Record<string, StoredStar | StoredLink>;
   del: string[];
 }
 
@@ -22,25 +31,62 @@ export interface PruneResult {
 const starKey = (id: string) => `s:${id}`;
 const linkKey = (id: string) => `l:${id}`;
 
+// クライアントへ配る形（保存専用の born / origin / v を除く）
+export function toWire(s: StoredStar): StarData {
+  return { id: s.id, x: s.x, y: s.y, c: s.c, by: s.by, ts: s.ts };
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const isStr = (v: unknown): v is string => typeof v === "string";
+
+// 今の版で、形が正しく、持ち主が持ち主 ID の形式の星か（旧形式・生の uid が混ざったものは false）
+function isStoredStar(v: unknown): v is StoredStar {
+  return (
+    isRecord(v) &&
+    v.v === STORE_VERSION &&
+    isStr(v.id) &&
+    isNum(v.x) &&
+    isNum(v.y) &&
+    isNum(v.c) &&
+    isStr(v.by) &&
+    OWNER_ID_PATTERN.test(v.by) &&
+    isNum(v.ts) &&
+    isNum(v.born) &&
+    isStr(v.origin)
+  );
+}
+
+function isStoredLink(v: unknown): v is StoredLink {
+  return (
+    isRecord(v) &&
+    v.v === STORE_VERSION &&
+    isStr(v.id) &&
+    isStr(v.a) &&
+    isStr(v.b) &&
+    isStr(v.by) &&
+    OWNER_ID_PATTERN.test(v.by) &&
+    isNum(v.ts)
+  );
+}
+
 export class World {
-  readonly stars = new Map<string, StarData>();
+  readonly stars = new Map<string, StoredStar>(); // 配るときは toWire / snapshot を通す
   readonly links = new Map<string, LinkData>();
 
   private starsByOwner = new Map<string, number>();
   private linksByOwner = new Map<string, number>();
   private linksByStar = new Map<string, Set<string>>(); // 星 → その星につながる線
-  // 以下はメモリ上だけの情報（保存しない。StarData を変えないため）。起動し直すと load の時点からになる
-  private createdAt = new Map<string, number>(); // 星 → 作成時刻（きらめきで延ばせる寿命の上限に使う）
-  private originOf = new Map<string, string>(); // 星 → 置いた接続元の鍵
-  private starsByOrigin = new Map<string, number>(); // 接続元の鍵 → 星の数
   private dirtyPut = new Set<string>();
   private dirtyDel = new Set<string>();
   private lastPrune = 0;
 
   // --- 星 ---
 
-  // 星を置く。上限超え・他人の星の上書きは null。
-  // origin は置いた接続元の鍵（同じ接続元の星を合わせて数える）。分からなければ null で、数えない
+  // 星を置く。上限超え・他人の星の上書きは null。戻り値は配る形（toWire 済み）。
+  // 持ち主が同じ id で置き直したときは位置・色だけを変え、born と ts（寿命）・origin は据え置く。
+  // 幽霊の復活は、星が一度消えたあとなので新しい星として扱う（born / ts は今）。
+  // origin は置いた接続元の鍵。同じ接続元が直近 ipStarWindowMs に置いた星を合わせて数える。分からなければ null で、数えない
   placeStar(
     owner: string,
     id: string,
@@ -53,20 +99,21 @@ export class World {
     const existing = this.stars.get(id);
     if (existing) {
       if (existing.by !== owner) return null; // 他人の星は上書きできない
-    } else if (
+      const moved: StoredStar = { ...existing, x, y, c };
+      this.stars.set(id, moved);
+      this.markPut(starKey(id));
+      return toWire(moved);
+    }
+    if (
       this.stars.size >= LIMITS.maxStars ||
       (this.starsByOwner.get(owner) ?? 0) >= LIMITS.maxStarsPerUser ||
-      (origin !== null && (this.starsByOrigin.get(origin) ?? 0) >= LIMITS.maxStarsPerIp)
+      (origin !== null && this.recentFromOrigin(origin, now) >= LIMITS.maxStarsPerIp)
     ) {
       return null;
     }
-    const star: StarData = { id, x, y, c, by: owner, ts: now };
-    this.putStar(star, now);
-    if (!existing && origin !== null) {
-      this.originOf.set(id, origin);
-      this.bump(this.starsByOrigin, origin, 1);
-    }
-    return star;
+    const star: StoredStar = { id, x, y, c, by: owner, ts: now, born: now, origin: origin ?? "", v: STORE_VERSION };
+    this.putStar(star);
+    return toWire(star);
   }
 
   // 星を消す。つながっていた線の id も返す
@@ -74,17 +121,25 @@ export class World {
     const star = this.stars.get(id);
     if (!star) return null; // 誰でも消せる。持ち主は幽霊から復活できる
     const links = this.deleteStar(star);
-    return { star, links };
+    return { star: toWire(star), links };
   }
 
-  // きらめき＝寿命のリセット。延ばせるのは作成から maxStarAgeMs まで（それを過ぎたら null）
+  // きらめき＝寿命のリセット。次のときは何もしない（延ばさず・保存せず・配らない）で null:
+  // - 作成（born）から maxStarAgeMs を過ぎた
+  // - 星の ts（作成・前回のきらめきのうち新しい方）から admireMinIntervalMs 経っていない（星ごとの全体の間隔）
   admire(id: string, now: number): StarData | null {
     const star = this.stars.get(id);
     if (!star) return null;
-    if (now - (this.createdAt.get(id) ?? now) > LIMITS.maxStarAgeMs) return null;
+    if (now - star.born > LIMITS.maxStarAgeMs) return null;
+    if (now - star.ts < LIMITS.admireMinIntervalMs) return null;
     star.ts = now;
     this.markPut(starKey(id));
-    return star;
+    return toWire(star);
+  }
+
+  // 配る形の全体（welcome 用）
+  snapshot(): { stars: StarData[]; links: LinkData[] } {
+    return { stars: [...this.stars.values()].map(toWire), links: [...this.links.values()] };
   }
 
   // --- 線 ---
@@ -140,18 +195,23 @@ export class World {
 
   // --- 永続化 ---
 
-  // 起動時に保存済みの状態を取り込む（変更扱いにはしない）。作成時刻は保存していないので now とする。
-  // 次のものは取り込まず、保存先からも消す（残すと起動のたびに読んで捨てることになる）:
-  // - 持ち主が持ち主 ID の形式でない星・線（旧プロトコルの生の uid が入っている。配信すると uid が漏れる）
+  // 起動時に保存済みの状態を取り込む（変更扱いにはしない）。entries は storage.list の [鍵, 値]。
+  // 次のものは取り込まず、その鍵を保存先からも消す（残すと起動のたびに読んで捨てることになる）:
+  // - 版が STORE_VERSION でないレコード（旧形式。生の uid が入っていた時代のものを含めて確実に捨てる）
+  // - 形が壊れたもの、持ち主が持ち主 ID の形式でないもの（配信すると uid が漏れる）、鍵と id が合わないもの
   // - 端の星が無い線（上で捨てた星につながる線を含む）
-  load(stars: Iterable<StarData>, links: Iterable<LinkData>, now: number) {
-    for (const s of stars) {
-      if (OWNER_ID_PATTERN.test(s.by)) this.putStar(s, now, false);
-      else this.markDel(starKey(s.id));
+  // 消す鍵は値の id から作らない（値が壊れていても、読んだ鍵そのものを消す）
+  load(stars: Iterable<[key: string, value: unknown]>, links: Iterable<[key: string, value: unknown]>) {
+    for (const [key, s] of stars) {
+      if (isStoredStar(s) && key === starKey(s.id)) this.putStar(s, false);
+      else this.markDel(key);
     }
-    for (const l of links) {
-      if (OWNER_ID_PATTERN.test(l.by) && this.stars.has(l.a) && this.stars.has(l.b)) this.putLink(l, false);
-      else this.markDel(linkKey(l.id));
+    for (const [key, l] of links) {
+      if (isStoredLink(l) && key === linkKey(l.id) && this.stars.has(l.a) && this.stars.has(l.b)) {
+        this.putLink({ id: l.id, a: l.a, b: l.b, by: l.by, ts: l.ts }, false);
+      } else {
+        this.markDel(key);
+      }
     }
   }
 
@@ -160,8 +220,13 @@ export class World {
     const put: StorageChanges["put"] = {};
     for (const key of this.dirtyPut) {
       const id = key.slice(2);
-      const v = key.startsWith("s:") ? this.stars.get(id) : this.links.get(id);
-      if (v) put[key] = v;
+      if (key.startsWith("s:")) {
+        const s = this.stars.get(id);
+        if (s) put[key] = { ...s };
+      } else {
+        const l = this.links.get(id);
+        if (l) put[key] = { ...l, v: STORE_VERSION };
+      }
     }
     const del = [...this.dirtyDel];
     this.dirtyPut.clear();
@@ -171,17 +236,21 @@ export class World {
 
   // --- 内部 ---
 
-  private putStar(star: StarData, now: number, track = true) {
-    const prev = this.stars.get(star.id);
-    if (!prev) {
-      this.bump(this.starsByOwner, star.by, 1);
-      this.createdAt.set(star.id, now);
-    }
+  // 新しい星を加える（置き直しは placeStar が直接書き換える）
+  private putStar(star: StoredStar, track = true) {
+    this.bump(this.starsByOwner, star.by, 1);
     this.stars.set(star.id, star);
     if (track) this.markPut(starKey(star.id));
   }
 
-  private deleteStar(star: StarData): string[] {
+  // 同じ接続元が直近 ipStarWindowMs に置いて、まだ残っている星の数（星は maxStars 以下なので毎回数える）
+  private recentFromOrigin(origin: string, now: number): number {
+    let n = 0;
+    for (const s of this.stars.values()) if (s.origin === origin && now - s.born < LIMITS.ipStarWindowMs) n++;
+    return n;
+  }
+
+  private deleteStar(star: StoredStar): string[] {
     const removedLinks: string[] = [];
     for (const lid of [...(this.linksByStar.get(star.id) ?? [])]) {
       const l = this.links.get(lid);
@@ -193,12 +262,6 @@ export class World {
     this.linksByStar.delete(star.id);
     this.stars.delete(star.id);
     this.bump(this.starsByOwner, star.by, -1);
-    this.createdAt.delete(star.id);
-    const origin = this.originOf.get(star.id);
-    if (origin !== undefined) {
-      this.originOf.delete(star.id);
-      this.bump(this.starsByOrigin, origin, -1);
-    }
     this.markDel(starKey(star.id));
     return removedLinks;
   }

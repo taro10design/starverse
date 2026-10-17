@@ -26,6 +26,10 @@ function skip(name, why) {
   console.log(`SKIP  ${name}  (${why})`);
 }
 
+// サーバーが保存にだけ使う項目（StoredStar / StoredLink）。配信に出てきたら漏れている
+const SERVER_ONLY = ["born", "origin", "v"];
+const hasServerOnly = (o) => SERVER_ONLY.some((k) => Object.hasOwn(o, k));
+
 const newUid = () => crypto.randomUUID();
 const newId = () => "e2e-" + crypto.randomUUID().slice(0, 8);
 
@@ -250,6 +254,11 @@ try {
     check("配信される星の持ち主は uid ではない", !!star && star.by !== B.uid && HEX32.test(star.by), star?.by);
     check("welcome の me が自分の星の by と一致する", !!star && star.by === welcomeB?.me);
     check("星の色は star メッセージの c", !!star && star.c === 3, `c=${star?.c}`);
+    check(
+      "配信される星にサーバー専用の born / origin / v が含まれない",
+      !!star && !hasServerOnly(star),
+      star && Object.keys(star).join(","),
+    );
     B.send({ t: "link", id: ids.l1, a: ids.s1, b: ids.s2 });
     const link = await A.waitFor((m) => m.t === "link" && m.id === ids.l1);
     check("線が他の人に届く（持ち主は uid ではない）", !!link && link.by === welcomeB?.me && link.by !== B.uid);
@@ -273,6 +282,10 @@ try {
     check("他人は星を上書き・移動できない", !!s1 && s1.by === welcomeB?.me && s1.x === 0.1 && s1.c === 3);
     check("持ち主以外は線を消せない", !!w1?.links.some((l) => l.id === ids.l1));
     check("welcome の星の持ち主に uid が出てこない", !!w1 && !w1.stars.some((s) => s.by === B.uid || s.by === A.uid));
+    check(
+      "welcome の星・線にサーバー専用の born / origin / v が含まれない",
+      !!w1 && w1.stars.length > 0 && !w1.stars.some(hasServerOnly) && !w1.links.some(hasServerOnly),
+    );
 
     // 同じ uid でつなぎ直すと同じ持ち主になる
     const B2 = client("B2", { uid: B.uid });

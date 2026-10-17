@@ -1,19 +1,23 @@
 // レート制限の部品。時刻は引数で受け取る（テストしやすいように）。どれもメモリ上だけで持ち、
 // ハイバネートで失われてよい近似として使う。
 
-// トークンバケット。接続ごとの受信量を制限する
+// トークンバケット。接続ごとの受信量を制限する。
+// 直近 windowMs の中で、通した数とあふれた数を 1 秒刻みのリングで数える（切断の判定に使う。inbound.ts）
 export class TokenBucket {
   private tokens: number;
   private last: number;
-  private drops = 0;
+  private ring: { sec: number; passed: number; dropped: number }[];
 
   constructor(
     private capacity: number,
     private refillPerSec: number,
     now: number,
+    windowMs: number,
   ) {
     this.tokens = capacity;
     this.last = now;
+    const slots = Math.max(1, Math.ceil(windowMs / 1000));
+    this.ring = Array.from({ length: slots }, () => ({ sec: Number.NEGATIVE_INFINITY, passed: 0, dropped: 0 }));
   }
 
   // cost ぶん使えるなら true。足りなければ false（その操作は捨てる）
@@ -21,19 +25,38 @@ export class TokenBucket {
     const elapsed = Math.max(0, now - this.last);
     this.last = now;
     this.tokens = Math.min(this.capacity, this.tokens + (elapsed / 1000) * this.refillPerSec);
+    const slot = this.slotAt(now);
     if (this.tokens >= cost) {
       this.tokens -= cost;
-      if (this.drops > 0) this.drops--;
+      slot.passed++;
       return true;
     }
-    this.drops++;
+    slot.dropped++;
     return false;
   }
 
-  // あふれの数。あふれるたびに +1、通るたびに -1。
-  // 「連続」で数えると、回復した分だけ時々通る大量送信がいつまでも切られないので、差し引きで数える
-  get excessDrops(): number {
-    return this.drops;
+  // 直近の窓（今の 1 秒を含む）で、通した数とあふれた数
+  recent(now: number): { passed: number; dropped: number } {
+    const sec = Math.floor(now / 1000);
+    let passed = 0;
+    let dropped = 0;
+    for (const s of this.ring) {
+      if (sec - s.sec >= this.ring.length) continue; // 窓より古い
+      passed += s.passed;
+      dropped += s.dropped;
+    }
+    return { passed, dropped };
+  }
+
+  private slotAt(now: number) {
+    const sec = Math.floor(now / 1000);
+    const slot = this.ring[((sec % this.ring.length) + this.ring.length) % this.ring.length];
+    if (slot.sec !== sec) {
+      slot.sec = sec;
+      slot.passed = 0;
+      slot.dropped = 0;
+    }
+    return slot;
   }
 }
 

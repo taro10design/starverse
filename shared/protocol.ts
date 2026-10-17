@@ -5,6 +5,7 @@
 // クライアントは client/src/message-handlers.ts に処理を書く（足さないと型エラーになる）。
 // 詳しくは docs/extending.md。
 
+// サーバーは保存するときに born / origin / v を足すが、配信（welcome・star）には含めない（server/src/world.ts の StoredStar）
 export interface StarData {
   id: string;
   x: number;
@@ -40,7 +41,8 @@ export type PresenceTuple = [id: string, x: number, y: number, c: number];
 //
 // 持ち主の鍵 uid は秘密。接続の最初に `hello` で 1 回だけ送り、サーバーは SHA-256 で
 // 持ち主 ID（StarData.by / LinkData.by）に変えて保存・配信する。uid そのものは保存も配信もしない。
-// hello の前に送られた他のメッセージは無視され、続くと（20 回）1008 で切断される。形式に合わない uid の hello も 1008。
+// hello の前に送られた他のメッセージは無視され、違反として通算で数える（減らない。2 回目以降の hello も同じ）。
+// 通算 20 回目で 1008 で切断される。形式に合わない uid の hello は即 1008。
 // hello の処理中（ハッシュ計算の間）に届いたものは、welcome のあとに処理される。
 export type ClientMessage =
   | { t: "hello"; uid: string }
@@ -48,7 +50,9 @@ export type ClientMessage =
   | { t: "pulse"; x: number; y: number }
   | { t: "star"; id: string; x: number; y: number; c: number }
   | { t: "unstar"; id: string }
-  | { t: "admire"; id: string } // 同じ接続から同じ星へは 5 秒に 1 回（超えたものは黙って捨てられる）
+  // 同じ接続から同じ星へは 5 秒に 1 回。さらに星ごとに、星の ts（作成・前回のきらめき）から 60 秒は
+  // 誰のきらめきも効かない。作成から 24 時間を過ぎた星も延びない（どれも黙って捨てられる）
+  | { t: "admire"; id: string }
   | { t: "link"; id: string; a: string; b: string }
   | { t: "unlink"; id: string };
 
@@ -65,7 +69,7 @@ export type ServerMessage =
   | { t: "pulse"; x: number; y: number; c: number }
   | ({ t: "star" } & StarData)
   | { t: "unstar"; id: string }
-  | { t: "admire"; id: string; ts: number } // 星の位置が視界内の人にだけ届く
+  | { t: "admire"; id: string; ts: number } // 視界に関係なく全員に届く（どの手元でも星の寿命をそろえる）
   | ({ t: "link" } & LinkData)
   | { t: "unlink"; id: string }
   | { t: "leave"; id: string };

@@ -3,13 +3,13 @@ import { Cooldown, TokenBucket, WindowCounter } from "../src/rate-limit";
 
 describe("TokenBucket", () => {
   it("容量まではバーストできる", () => {
-    const b = new TokenBucket(5, 1, 0);
+    const b = new TokenBucket(5, 1, 0, 10_000);
     for (let i = 0; i < 5; i++) expect(b.take(1, 0)).toBe(true);
     expect(b.take(1, 0)).toBe(false);
   });
 
   it("時間とともに回復する", () => {
-    const b = new TokenBucket(2, 10, 0); // 毎秒10
+    const b = new TokenBucket(2, 10, 0, 10_000); // 毎秒10
     b.take(2, 0);
     expect(b.take(1, 0)).toBe(false);
     expect(b.take(1, 100)).toBe(true); // 100ms で 1 回復
@@ -17,35 +17,42 @@ describe("TokenBucket", () => {
   });
 
   it("容量を超えて貯まらない", () => {
-    const b = new TokenBucket(3, 100, 0);
+    const b = new TokenBucket(3, 100, 0, 10_000);
     expect(b.take(3, 10_000)).toBe(true);
     expect(b.take(1, 10_000)).toBe(false);
   });
 
   it("コストの大きい操作は多くのトークンを使う", () => {
-    const b = new TokenBucket(4, 0, 0);
+    const b = new TokenBucket(4, 0, 0, 10_000);
     expect(b.take(3, 0)).toBe(true);
     expect(b.take(2, 0)).toBe(false);
   });
 
-  it("あふれた回数を数え、成功するたびに 1 つ減らす", () => {
-    const b = new TokenBucket(1, 1, 0);
-    b.take(1, 0);
-    b.take(1, 0);
-    b.take(1, 0);
-    expect(b.excessDrops).toBe(2);
-    b.take(1, 5000);
-    expect(b.excessDrops).toBe(1);
-    b.take(1, 10_000);
-    b.take(1, 15_000);
-    expect(b.excessDrops).toBe(0);
+  it("直近の窓の中で、通した数とあふれた数を数える", () => {
+    const b = new TokenBucket(1, 1, 0, 10_000);
+    b.take(1, 0); // 通る
+    b.take(1, 0); // あふれ
+    b.take(1, 500); // あふれ
+    expect(b.recent(500)).toEqual({ passed: 1, dropped: 2 });
+    b.take(1, 2000); // 回復して通る
+    expect(b.recent(2000)).toEqual({ passed: 2, dropped: 2 });
   });
 
-  it("回復した分だけ時々通る大量送信でも、あふれの数は増え続ける（ときどきの成功で帳消しにならない）", () => {
-    const b = new TokenBucket(10, 40, 0);
+  it("窓より古い分は数えない（1 秒刻み）", () => {
+    const b = new TokenBucket(1, 0, 0, 10_000);
+    b.take(1, 0);
+    b.take(1, 0);
+    expect(b.recent(9_999)).toEqual({ passed: 1, dropped: 1 });
+    expect(b.recent(10_000)).toEqual({ passed: 0, dropped: 0 }); // 0 秒目の枠が窓から出た
+    b.take(1, 25_000);
+    expect(b.recent(25_000)).toEqual({ passed: 0, dropped: 1 }); // 何周しても古い枠を混ぜない
+  });
+
+  it("回復した分だけ時々通る大量送信でも、あふれは窓の中に貯まる", () => {
+    const b = new TokenBucket(10, 40, 0, 10_000);
     // 毎秒 1000 通（1ms ごと）を 1 秒間。通るのは毎秒 40 通ほど
     for (let t = 0; t < 1000; t++) b.take(1, t);
-    expect(b.excessDrops).toBeGreaterThan(800);
+    expect(b.recent(999).dropped).toBeGreaterThan(900);
   });
 });
 

@@ -22,7 +22,7 @@ export interface Conn {
   dirty: boolean; // 位置が変わって、まだ配信していない
   bucket: TokenBucket;
   violations: ViolationCounter; // 手順の違反（hello 前の hello 以外、2 回目以降の hello）
-  admired: Cooldown; // 星ごとの、最後にきらめかせた時刻（連打で寿命を延ばし続けられないように）
+  admired: Cooldown; // この接続が星ごとに最後にきらめかせた時刻（星ごとの全体の間隔は World が持つ）
   attachedAt: number; // 最後に永続属性（ハイバネート用）へ書いた時刻
 }
 
@@ -101,13 +101,14 @@ const handlers: { [K in MemberMessageType]: Handler<K> } = {
   },
 
   // 見てもらった星は息を吹き返す。同じ接続から同じ星へは admireCooldownMs に 1 回だけ。
-  // 知らせるのは、その星が視界に入っている人だけ（視界をまだ送ってこない人には送る）
+  // さらに星ごとに、星の ts から admireMinIntervalMs の間は誰がきらめいても延ばさない（World.admire）。
+  // ts は全員に配る（視界外の人の手元でも寿命を合わせ、星が早く消えないように）。増え方は星ごとの間隔で抑える
   admire(room, conn, m) {
     const now = room.now();
     if (!room.world.stars.has(m.id) || !conn.admired.allow(m.id, now)) return;
-    const star = room.world.admire(m.id, now); // 作成から maxStarAgeMs を過ぎた星は延びない
+    const star = room.world.admire(m.id, now); // 間隔内・作成から maxStarAgeMs を過ぎた星は延びない
     if (!star) return;
-    room.broadcastNear({ t: "admire", id: star.id, ts: star.ts }, star.x, star.y);
+    room.broadcast({ t: "admire", id: star.id, ts: star.ts });
     room.persist();
   },
 

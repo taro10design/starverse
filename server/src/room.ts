@@ -8,12 +8,12 @@
 // 受信は 1 通ごとに inbound.ts の関門を通す（読む前のトークン → hello 前後の振り分け → 追加のトークン）。
 // 接続元は CF-Connecting-IP の HMAC（秘密は storage の `ipkey`）で数え、生の IP は持たない。
 
-import type { LinkData, PeerDot, PresenceTuple, ServerMessage, StarData } from "../../shared/protocol";
+import type { PeerDot, PresenceTuple, ServerMessage } from "../../shared/protocol";
 import { LIMITS, RATE, sendMsFor } from "./config";
 import type { Env } from "./env";
 import { dispatch, type BroadcastOptions, type Conn, type Member, type RoomApi } from "./handlers";
 import { importIpSecret, ipKey, isLoopback, newIpSecret, ownerFromUid, storedIpSecret } from "./identity";
-import { classify, extraCost, IdentifyBacklog, screenRaw, ViolationCounter } from "./inbound";
+import { classify, extraCost, IdentifyBacklog, isFlooding, screenRaw, ViolationCounter } from "./inbound";
 import { Cooldown, TokenBucket, WindowCounter } from "./rate-limit";
 import { inView } from "./spatial";
 import { World } from "./world";
@@ -69,10 +69,11 @@ export class Universe implements RoomApi, DurableObject {
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.ctx.blockConcurrencyWhile(async () => {
       this.ipSecret = await importIpSecret(await this.loadIpSecret());
-      const stars = await this.ctx.storage.list<StarData>({ prefix: "s:" });
-      const links = await this.ctx.storage.list<LinkData>({ prefix: "l:" });
-      this.world.load(stars.values(), links.values(), Date.now());
-      this.persist(); // load で捨てた星・線（旧形式の持ち主、端の無い線）を保存先からも消す
+      // 値は旧形式・壊れたものを含みうるので unknown として読み、World.load が検証する
+      const stars = await this.ctx.storage.list<unknown>({ prefix: "s:" });
+      const links = await this.ctx.storage.list<unknown>({ prefix: "l:" });
+      this.world.load(stars.entries(), links.entries());
+      this.persist(); // load で捨てた星・線（旧形式・持ち主が uid・端の無い線）を、読んだ鍵のまま保存先からも消す
       // ハイバネートから起きた場合、生きている接続を取り込み直す
       for (const ws of this.ctx.getWebSockets()) this.connOf(ws);
       this.sendMs = sendMsFor(this.conns.size);
@@ -154,7 +155,7 @@ export class Universe implements RoomApi, DurableObject {
     if (extra > 0 && !conn.bucket.take(extra, now)) {
       // 置いたつもりの星・線を、送り主の画面から取り消してもらう
       if (msg.t === "star" || msg.t === "link") this.send(conn, { t: "reject", kind: msg.t, id: msg.id });
-      if (conn.bucket.excessDrops > RATE.closeAfterDrops) this.close(conn, 1008, "rate limit");
+      if (isFlooding(conn.bucket, now)) this.close(conn, 1008, "rate limit");
       return;
     }
     try {
@@ -288,15 +289,8 @@ export class Universe implements RoomApi, DurableObject {
       dots.push({ id: o.id, x: round4(o.x), y: round4(o.y), c: o.c });
       if (dots.length >= LIMITS.maxWelcomePeers) break;
     }
-    this.send(conn, {
-      t: "welcome",
-      id: conn.id,
-      me: owner,
-      sendMs: this.sendMs,
-      dots,
-      stars: [...this.world.stars.values()],
-      links: [...this.world.links.values()],
-    });
+    const { stars, links } = this.world.snapshot(); // 保存専用の born / origin / v は配らない
+    this.send(conn, { t: "welcome", id: conn.id, me: owner, sendMs: this.sendMs, dots, stars, links });
     this.markDirty(conn); // 他の人に新しい光を知らせる
 
     // 貯めきれなかった星・線は断ったことを伝え（welcome のあとなので、クライアントは取り消せる）、残りを順に処理する
@@ -461,7 +455,7 @@ export class Universe implements RoomApi, DurableObject {
       c: s.c,
       view: null,
       dirty: false,
-      bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, now),
+      bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, now, LIMITS.rateWindowMs),
       violations: new ViolationCounter(LIMITS.maxProtocolViolations),
       admired: new Cooldown(LIMITS.admireCooldownMs, LIMITS.admireCooldownEntries),
       attachedAt: now,
