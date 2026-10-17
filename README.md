@@ -32,12 +32,12 @@
 
 ## 技術スタック
 
-- **フロントエンド**: TypeScript + Canvas 2D（Vite でビルド、ライブラリ依存なし）
-- **バックエンド**: TypeScript + Cloudflare Workers + Durable Objects
-- **共通**: WebSocket のメッセージ型と星の寿命ルールを [shared/](shared/) でクライアントとサーバーが共有
-- **品質**: Vitest（単体テスト）、ESLint（strict）、Prettier、GitHub Actions（CI）、E2E / 負荷テストのスクリプト
+- **フロントエンド**: TypeScript + Canvas 2D（Vite でビルド）。WebSocket の再接続は [PartySocket](https://github.com/cloudflare/partykit/tree/main/packages/partysocket)
+- **バックエンド**: TypeScript + Cloudflare Workers + Durable Objects。接続の管理は [PartyServer](https://github.com/cloudflare/partykit/tree/main/packages/partyserver)（`Server`）
+- **共通**: WebSocket のメッセージの形を [Valibot](https://valibot.dev) のスキーマで定義し、型をそこから導く（[shared/protocol.ts](shared/protocol.ts)）。星の寿命ルールも [shared/](shared/) でクライアントとサーバーが共有
+- **品質**: Vitest（単体テストと、`@cloudflare/vitest-plugin` による Workers ランタイム上の黒箱テスト）、ESLint（strict）、Prettier、GitHub Actions（CI）、E2E / 負荷テストのスクリプト
 - **配信**: Cloudflare Pages
-- **機能**: リアルタイム同期（WebSocket）、永続化（SQLite）、スパム対策（密度ルール）
+- **機能**: リアルタイム同期（WebSocket）、永続化（SQLite）、スパム対策（密度ルール、接続ごとのレート制限）。同じ接続元（IP）ごとの制限は Cloudflare のエッジのレート制限ルールに任せる（[ADR 0009](docs/adr/0009-prefer-proven-components.md)）
 
 ## ドキュメント
 
@@ -53,7 +53,8 @@
 ```bash
 npm install
 npm run dev:server   # Worker + 静的ファイルをローカルで起動（http://localhost:8787）
-npm run check        # 型チェック・lint・整形チェック・単体テスト
+npm test             # テスト（node の単体 + Workers ランタイム）。npm run test:unit / npm run test:runtime で片方だけ
+npm run check        # 型チェック・lint・整形チェック・ライセンス表記・テスト
 npm run build
 ```
 

@@ -10,20 +10,23 @@
 
 ## 新しいメッセージを足す（例: `emote`）
 
-1. **[shared/protocol.ts](../shared/protocol.ts)** に型を足す
-   - クライアント → サーバーなら `ClientMessage`、逆なら `ServerMessage` のユニオンに追加
-2. **[server/src/validate.ts](../server/src/validate.ts)** の `parseClientMessage` に `case "emote"` を足す
-   - 型・範囲・長さを検証して、通ったものだけを返す。ここを通らないものは状態に触れない
-3. **[server/src/config.ts](../server/src/config.ts)** の `COST` にレート制限のコストを足す（足さないと型エラー）
-4. **[server/src/handlers.ts](../server/src/handlers.ts)** の `handlers` に処理を足す（足さないと型エラー）
-   - 部屋への操作は `RoomApi`（`broadcast` / `broadcastNear` / `persist` など）だけを使う
-5. サーバーから返すメッセージがあれば、**[client/src/message-handlers.ts](../client/src/message-handlers.ts)** の `serverHandlers` に処理を足す（足さないと型エラー）
-6. **[server/tests/](../server/tests/)** と **[client/tests/](../client/tests/)** にテストを足す。通しの確認は `scripts/e2e.mjs` に足す
+1. **[shared/protocol.ts](../shared/protocol.ts)** に Valibot のスキーマを足す
+   - クライアント → サーバーなら `ClientMessageSchema` のユニオンに、逆なら `ServerMessage` に追加する。型 `ClientMessage` はスキーマから導かれる
+   - 型・範囲・長さの検証はスキーマに書く（`Coord` / `Color` / `Id` などの部品がある）。ここを通らないものは状態に触れない
+2. **[server/src/config.ts](../server/src/config.ts)** の `COST` にレート制限のコストを足す（足さないと型エラー）
+3. **[server/src/handlers.ts](../server/src/handlers.ts)** の `handlers` に処理を足す（足さないと型エラー）
+   - 受信の経路は、PartyServer の `onMessage`（[room.ts](../server/src/room.ts)）→ `screenRaw`（JSON を読む前のトークン）→ `parseClientMessage`（[validate.ts](../server/src/validate.ts)。スキーマで検証）→ `classify`（hello の前後の振り分け）→ `COST` の追加分 → `dispatch`（`handlers`）。`validate.ts` に `case` を足す必要は無い
+   - 部屋への操作は `RoomApi`（`send` / `broadcastAll` / `broadcastNear` / `persist` など）だけを使う
+4. サーバーから返すメッセージがあれば、**[client/src/message-handlers.ts](../client/src/message-handlers.ts)** の `serverHandlers` に処理を足す（足さないと型エラー）
+5. テストを足す。純粋なロジック（検証・ハンドラ・World）は **[server/tests/](../server/tests/)**（node）と **[client/tests/](../client/tests/)**。実際の接続・配信・永続化の流れは **[server/tests/runtime/](../server/tests/runtime/)**（Workers ランタイム上。`helpers.ts` の接続の補助を使う）。通しの確認は `scripts/e2e.mjs` に足す
 
 ## 世界のルールを変える（例: 星の上限、寿命）
 
 - 数値は [server/src/config.ts](../server/src/config.ts)（上限・レート・配信間隔）か [shared/rules.ts](../shared/rules.ts)（寿命。クライアントの表示にも使う）
 - ルール自体は [server/src/world.ts](../server/src/world.ts)。Cloudflare に依存しない純粋なクラスなので、`server/tests/world.test.ts` にテストを足してから変える
+- 保存する形（星の `born`・版 `v`）を変えるときは `STORE_VERSION` を上げる。版の合わない旧形式のレコードは起動時に捨てられる（[ADR 0006](adr/0006-no-backward-compatibility.md)）
+- 位置の配信（誰に・何を送るか）は [server/src/presence.ts](../server/src/presence.ts)（純粋なロジック。`server/tests/presence.test.ts`）
+- 同じ接続元（IP）ごとの制限を Worker に足さない。エッジのレート制限ルールで行う（[ADR 0009](adr/0009-prefer-proven-components.md)）
 
 ## クライアントにツールを足す（例: 「色を塗る」）
 
@@ -45,11 +48,15 @@
 ## 変更するときの確認
 
 ```bash
-npm run check                # 型チェック・lint・整形チェック・単体テスト
+npm run check                # 型チェック・lint・整形チェック・ライセンス表記・テスト（node + ランタイム）
+npm run test:unit            # node の単体テストだけ
+npm run test:runtime         # Workers ランタイム上のテストだけ
 npm run build
 npm run dev:server           # 手元の Worker を起動し、http://localhost:8787 をブラウザで確認
 node scripts/e2e.mjs http://localhost:8787 --full
 npm run loadtest -- ws://localhost:8787/ws 200 10   # 負荷の確認（ローカルに向けること）
 ```
+
+依存を足したり変えたりしたら `npm run notices` で `THIRD_PARTY_NOTICES` を更新する（`npm run check` が最新かを検査する）。
 
 実機で動かす機能（触覚・音・タッチなど）は [qa/device-checklist.md](qa/device-checklist.md) に確認結果を残します。
