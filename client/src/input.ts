@@ -228,6 +228,7 @@ export class Input {
     const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
     const tap = this.pointers.size === 0 && this.downTarget === this.app.canvas && moved <= 12;
     this.current.up(this.pointerInfo(e), tap); // tap でなくても呼ぶ（ドラッグ中の操作を確定する）
+    this.app.ui.onboarding.released(this.tool, tap);
   }
 
   // 追っていない指（キャンバスの外で始まった・片付け済み）の中断では、ツールの操作を止めない

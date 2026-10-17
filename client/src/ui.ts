@@ -1,6 +1,9 @@
 import { PALETTES, MAP_SIZE, TOOL_SVG, TOOL_TIPS } from "./constants";
 import { DPR, SOLO } from "./env";
 import { storage } from "./storage";
+import { Onboarding } from "./onboarding";
+import { DemoView } from "./demo-view";
+import type { DemoKind } from "./demo";
 import { must } from "./util";
 import type { ToolName } from "./constants";
 import type { App } from "./app";
@@ -16,6 +19,17 @@ const ICON_UNDO =
 const ICON_REDO =
   '<svg viewBox="0 0 24 24"><path d="M16 5 L21 9.5 L16 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9.5 L10 9.5 A6 6 0 0 0 10 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
+// 説明パネルの、見本つきの項目（見本の種類と説明）
+const HELP_DEMOS: [DemoKind, string][] = [
+  ["tap", "● 光：空をタップすると、光がそこへ向かう"],
+  ["star", "✦ 星：タップで星を置く"],
+  ["trace", "✦ 星：なぞると続けて置ける"],
+  ["line", "─ 線：星から星へなぞって線を引く"],
+  ["erase", "⌫ 消：星をタップで消す。もう一度押すと自分のが全部消える"],
+  ["revive", "👻 消えた自分の星は幽霊になる。光でタップすると復活。幽霊ツールでなぞると忘れる"],
+  ["pinch", "ピンチ / ホイール — ズーム"],
+];
+
 export class UI {
   private hapticEl: HTMLInputElement | null = null;
   private audioCtx: AudioContext | null = null;
@@ -23,6 +37,10 @@ export class UI {
   private redoBtn!: HTMLButtonElement;
   mapEl!: HTMLCanvasElement;
   private toolButtons = new Map<ToolName, HTMLButtonElement>();
+  private helpBtn!: HTMLButtonElement;
+  private hintEl!: HTMLDivElement;
+  private hintView = new DemoView(72, 44);
+  readonly onboarding = new Onboarding(storage, () => this.renderOnboarding());
 
   constructor(private app: App) {
     this.createPalette();
@@ -30,8 +48,10 @@ export class UI {
     this.createTools();
     this.createZoomControls();
     this.createHelpPanel();
+    this.createHint();
     this.createMinimap();
     this.updateHistoryButtons();
+    this.renderOnboarding();
   }
 
   // pointerdown が下のキャンバスに伝わらないようにして実行する
@@ -118,6 +138,7 @@ export class UI {
   selectTool(name: ToolName) {
     this.app.input.setTool(name);
     for (const [n, b] of this.toolButtons) b.classList.toggle("on", n === name);
+    this.onboarding.toolSelected(name);
   }
 
   // 画面上の拡大・縮小・戻るボタン。ドラッグやキーが使えなくても、ポインタ1つで同じことができるようにする
@@ -147,38 +168,51 @@ export class UI {
     this.redoBtn.classList.toggle("dim", !history.canRedo);
   }
 
+  // 「?」の説明パネル。見本の動きがある項目は、押すとその下に小さな見本が開く（もう一度押すと閉じる）
   createHelpPanel() {
-    const btn = document.createElement("button");
+    const btn = (this.helpBtn = document.createElement("button"));
     btn.id = "helpbtn";
     btn.textContent = "?";
+    btn.setAttribute("aria-label", "操作の説明");
     const help = document.createElement("div");
     help.id = "help";
     help.innerHTML = `
-  <p>左下 — モードを切り替える</p>
-  <p class="dim">● 光：タップで波、動かすとついてくる。自分の星タップで消える</p>
+  <p class="head">見本つき — 押すと動きが見られる</p>
+  ${HELP_DEMOS.map(([kind, text]) => `<button class="demo-item" data-demo="${kind}"><span>${text}</span><span class="play">▶</span></button>`).join("")}
+  <p class="head">ほかに</p>
   <p class="dim">他人の星をタップ — きらめきを送る。その星は長生きする</p>
-  <p class="dim">✦ 星：タップで置く、なぞると連続で置ける</p>
-  <p class="dim">─ 線：星から星へなぞって自分で線を引く</p>
-  <p class="dim">⌫ 消：誰の星でも消せる。もう一度押すと自分のが全部消える</p>
-  <p class="dim">👻 幽霊：消えた自分の星をなぞって忘れる。もう一度押すと全部忘れる</p>
-  <p class="dim">消えた自分の星は幽霊として残る。光モードでタップすると復活</p>
-  <p class="dim"><button id="revivebtn">幽霊を全部復活</button></p>
-  <p>近くの星どうし — 線がつながって星座に</p>
-  <p>すごく近い2つ — 連星になって回る</p>
-  <p>ピンチ / ホイール — ズーム</p>
-  <p class="dim">PC：Space+ドラッグ / 中・右ボタンのドラッグ / 矢印・WASD — 動かす（Shift で速く）</p>
-  <p class="dim">PC：+ − — ズーム、0 — 自分の光に戻る、1〜5 — ツール切替</p>
-  <p class="dim">右下の ＋ − ◎ でも操作できる</p>
-  <p>下の点 — 自分の色</p>
-  <p>右上の地図 — 触れた場所へ光を送る</p>
-  <p>右下 — ひとりの宇宙と切り替え</p>
-  <p class="dim">${SOLO ? "ひとりの宇宙。星はここに残る" : "同じ空を誰かと見ている。混んだ場所の星は早く消え、見てもらった星は長生きする"}</p>
-  <p class="dim"><button id="keybtn">鍵リンクをコピー</button> 別の端末・ブラウザでも自分の星として開ける</p>
-
+  <p class="dim">近くの星どうしは線でつながって星座に。すごく近い 2 つは連星になって回る</p>
+  <p class="dim">下の点 — 自分の色。右上の地図 — 触れた場所へ光を送る</p>
+  <p class="dim">右下 — ひとりの宇宙と切り替え。${SOLO ? "ひとりの宇宙では、星はここに残る" : "混んだ場所の星は早く消え、見てもらった星は長生きする"}</p>
+  <p class="dim">PC：Space+ドラッグ / 中・右ドラッグ / 矢印・WASD で移動（Shift で速く）、+ − でズーム、0 で自分の光へ、1〜5 でツール</p>
+  <p class="dim"><button id="revivebtn">幽霊を全部復活</button> <button id="keybtn">鍵リンクをコピー</button></p>
+  <p class="dim">鍵リンク — 別の端末・ブラウザでも自分の星として開ける</p>
 `;
-    UI.onPress(btn, () => help.classList.toggle("open"));
+    const view = new DemoView(200, 110);
+    const open = (yes: boolean) => {
+      help.classList.toggle("open", yes);
+      if (yes) this.onboarding.helpOpened();
+      else {
+        view.stop();
+        view.canvas.remove();
+      }
+    };
+    UI.onPress(btn, () => open(!help.classList.contains("open")));
     document.body.appendChild(btn);
     document.body.appendChild(help);
+
+    for (const item of help.querySelectorAll<HTMLButtonElement>(".demo-item")) {
+      UI.onPress(item, () => {
+        const shown = item.nextElementSibling === view.canvas;
+        view.stop();
+        view.canvas.remove();
+        for (const i of help.querySelectorAll(".demo-item")) i.classList.remove("on");
+        if (shown) return;
+        item.after(view.canvas);
+        item.classList.add("on");
+        view.play(item.dataset.demo as DemoKind);
+      });
+    }
 
     const keyBtn = must(help.querySelector<HTMLElement>("#keybtn"), "#keybtn");
     UI.onPress(keyBtn, () => this.copyKeyLink(keyBtn));
@@ -190,8 +224,6 @@ export class UI {
       setTimeout(() => (reviveBtn.textContent = "幽霊を全部復活"), 1500);
     });
 
-    if (!storage.get("uchu-seen")) help.classList.add("open");
-
     // パネル外をタップしたら閉じる
     addEventListener("pointerdown", (e) => {
       if (
@@ -199,10 +231,36 @@ export class UI {
         e.target !== btn &&
         !(e.target instanceof Element && e.target.closest("#help"))
       ) {
-        help.classList.remove("open");
-        storage.set("uchu-seen", "1");
+        open(false);
       }
     });
+  }
+
+  // 初めての人への 1 行の案内（見本の動きつき）。キャンバスの操作を邪魔しないよう、触れても下に通す
+  createHint() {
+    const el = (this.hintEl = document.createElement("div"));
+    el.id = "hint";
+    el.setAttribute("role", "status"); // 読み上げにも、案内が変わったことを伝える
+    el.append(this.hintView.canvas, document.createElement("span"));
+    document.body.appendChild(el);
+  }
+
+  // Onboarding の状態を画面に映す（案内の文と見本、光らせるボタン、「?」の光）
+  renderOnboarding() {
+    const o = this.onboarding;
+    const el = this.hintEl;
+    const text = o.hint;
+    el.classList.toggle("show", text !== null);
+    if (text !== null) must(el.querySelector("span"), "#hint span").textContent = text;
+    if (o.demo) {
+      this.hintView.canvas.hidden = false;
+      this.hintView.play(o.demo);
+    } else {
+      this.hintView.stop();
+      this.hintView.canvas.hidden = true;
+    }
+    for (const [name, b] of this.toolButtons) b.classList.toggle("beckon", name === o.beckon);
+    this.helpBtn.classList.toggle("beckon", o.pulseHelp);
   }
 
   // 「鍵リンク」＝uid入りURL。このリンクで開くとどのブラウザでも自分の星のまま

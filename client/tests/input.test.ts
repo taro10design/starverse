@@ -162,7 +162,7 @@ function setup() {
     universe,
     history,
     network: { send: vi.fn() },
-    ui: { ping: vi.fn(), haptic: vi.fn(), selectTool: vi.fn() },
+    ui: { ping: vi.fn(), haptic: vi.fn(), selectTool: vi.fn(), onboarding: { released: vi.fn() } },
     focusLight: vi.fn(),
     canEdit: () => true,
     undo: vi.fn(),
@@ -204,6 +204,24 @@ describe("Input（ポインタ）", () => {
     input.handlePointerUp(pe(3, 500, 500));
     expect(up).toHaveBeenCalledTimes(1);
     expect(universe.stars.size).toBe(1);
+  });
+
+  it("キャンバスで離したら、今のツールとタップかどうかを案内（Onboarding）に知らせる。ピンチの指では知らせない", () => {
+    const { input, app, pe } = setup();
+    input.handlePointerDown(pe(1, 100, 100));
+    input.handlePointerUp(pe(1, 100, 100));
+    expect(app.ui.onboarding.released).toHaveBeenLastCalledWith("move", true);
+    input.setTool("star");
+    input.handlePointerDown(pe(2, 100, 100));
+    input.handlePointerMove(pe(2, 200, 100));
+    input.handlePointerUp(pe(2, 200, 100));
+    expect(app.ui.onboarding.released).toHaveBeenLastCalledWith("star", false);
+    // ピンチ（2 本指）では知らせない
+    input.handlePointerDown(pe(3, 100, 100));
+    input.handlePointerDown(pe(4, 300, 100));
+    input.handlePointerUp(pe(4, 300, 100));
+    input.handlePointerUp(pe(3, 100, 100));
+    expect(app.ui.onboarding.released).toHaveBeenCalledTimes(2);
   });
 
   it("lostpointercapture で指を片付けてツールを cancel する（次のクリックがピンチ扱いにならない）", () => {

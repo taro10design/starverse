@@ -128,9 +128,92 @@ body {
   transition: background 0.25s;
 }
 
+/* 「?」は見た目 34px、押せる範囲は ::before で 42px に広げる */
 #helpbtn {
   left: 22px;
   bottom: 64px;
+  width: 34px;
+  height: 34px;
+  font-size: 17px;
+  font-weight: 600;
+  color: rgba(225, 235, 255, 0.9);
+  background: rgba(200, 215, 255, 0.2);
+}
+
+#helpbtn::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+}
+
+/* 場所を知らせる光（「?」は一度開くまで、ツールは案内で選んでほしいとき） */
+.beckon {
+  animation: beckon 1.8s ease-in-out infinite;
+}
+
+@keyframes beckon {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(180, 205, 255, 0);
+  }
+  50% {
+    box-shadow:
+      0 0 14px 2px rgba(180, 205, 255, 0.55),
+      0 0 0 2px rgba(200, 220, 255, 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beckon {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(200, 220, 255, 0.6);
+  }
+}
+
+/* 初めての人への 1 行の案内（パレットの上）。触れても下のキャンバスに通す */
+#hint {
+  position: fixed;
+  left: 50%;
+  bottom: 64px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 6px 14px 6px 6px;
+  border-radius: 12px;
+  background: rgba(8, 12, 30, 0.7);
+  border: 1px solid rgba(160, 190, 255, 0.18);
+  color: rgba(225, 235, 255, 0.92);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 6px);
+  transition:
+    opacity 0.3s,
+    transform 0.3s;
+}
+
+#hint.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* 日本語を文節で折り返し（対応ブラウザだけ）、行の長さをそろえる */
+#hint span {
+  word-break: auto-phrase;
+  text-wrap: balance;
+}
+
+#hint canvas {
+  flex: none;
+  border-radius: 8px;
+}
+
+#hint canvas[hidden] {
+  display: none;
 }
 
 #mode {
@@ -180,9 +263,13 @@ body {
 #help {
   position: fixed;
   left: 22px;
-  bottom: 60px;
+  bottom: 106px;
   z-index: 3;
   max-width: 260px;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(160, 190, 255, 0.3) transparent;
   padding: 14px 18px;
   border-radius: 12px;
   background: rgba(8, 12, 30, 0.85);
@@ -209,6 +296,54 @@ body {
 #help .dim {
   margin-top: 6px;
   color: rgba(160, 175, 215, 0.6);
+  line-height: 1.6;
+}
+
+#help .head {
+  margin-top: 10px;
+  font-size: 0.66rem;
+  color: rgba(160, 175, 215, 0.75);
+}
+
+#help .head:first-child {
+  margin-top: 0;
+}
+
+/* 見本つきの項目。押すと下に見本の小窓が開く */
+.demo-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(160, 190, 255, 0.08);
+  color: inherit;
+  font: inherit;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.demo-item:hover,
+.demo-item.on {
+  background: rgba(160, 190, 255, 0.18);
+}
+
+.demo-item .play {
+  flex: none;
+  font-size: 0.6rem;
+  opacity: 0.7;
+}
+
+#help canvas.demo {
+  display: block;
+  margin: 6px 0 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(160, 190, 255, 0.15);
 }
 
 #keybtn,
@@ -235,6 +370,25 @@ body {
   }
   #helpbtn {
     bottom: 22px;
+  }
+  /* 左端のツールの列（光らせる ✦ を含む）に重ならないよう、左上（右上の地図の左）に出す */
+  #hint {
+    left: 16px;
+    top: 16px;
+    bottom: auto;
+    max-width: calc(100vw - 156px);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 8px 12px;
+    transform: translateY(-6px);
+  }
+  #hint.show {
+    transform: none;
+  }
+  /* 右上の地図（上から 16 + 108px）にかからない高さまで */
+  #help {
+    max-height: calc(100vh - 106px - 140px);
   }
 }
 
