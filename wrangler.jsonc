@@ -1,9 +1,9 @@
 {
   "name": "universe",
-  "main": "./src/worker.ts",
+  "main": "./server/src/index.ts",
   "compatibility_date": "2026-10-01",
   "assets": {
-    "directory": "./dist",
+    "directory": "./client/dist",
     "binding": "ASSETS"
   },
   "durable_objects": {

@@ -21,23 +21,21 @@ export const PALETTES: Palette[] = [
 
 export const PEER_COLOR: Palette = { core: "#dfe9ff", glow: [160, 190, 255] };
 
-// 寿命・TTL
-export const STAR_TTL = 3 * 60 * 60 * 1000; // 孤立した星の寿命（3時間）
-export const CROWD_R = 0.06; // 「混んでる」とみなす近傍半径
+// 寿命・TTL（星の寿命ルールはサーバーと共有）
+export { STAR_TTL, CROWD_R, ttlFor } from "../../shared/rules";
 export const GHOST_TTL = 24 * 60 * 60 * 1000; // 幽霊が覚えている期間（24時間）
 
-// 密集による寿命短縮
-export function ttlFor(crowd: number): number {
-  if (crowd >= 8) return 60 * 1000; // 1分
-  if (crowd >= 5) return 5 * 60 * 1000; // 5分
-  if (crowd >= 2) return 30 * 60 * 1000; // 30分
-  return STAR_TTL; // 3時間
-}
-
-// WebSocket
-export const WS_HOST = location.hostname.endsWith("workers.dev")
-  ? location.host
-  : "universe.taroooo0w0.workers.dev";
+// WebSocket の接続先。
+// - workers.dev / `wrangler dev`(8787) で開いたときは同じオリジン
+// - `?ws=localhost:8787` でローカルの Worker に上書きできる（開発用。uid の流出を避けるため localhost のみ許可）
+// - それ以外（Pages など）は本番の Worker
+const wsOverride = new URLSearchParams(location.search).get("ws");
+export const WS_HOST =
+  wsOverride && /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(wsOverride)
+    ? wsOverride
+    : location.hostname.endsWith("workers.dev") || location.port === "8787"
+      ? location.host
+      : "universe.taroooo0w0.workers.dev";
 
 // ミニマップ
 export const MAP_SIZE = 108;

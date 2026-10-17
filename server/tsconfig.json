@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src/worker.ts", "src/shared"]
+  "include": ["src", "tests", "../shared"]
 }

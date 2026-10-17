@@ -3,16 +3,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "vite client",
+    "dev:server": "wrangler dev",
+    "build": "tsc -b && vite build client",
+    "preview": "vite preview client",
     "typecheck": "tsc -b",
-    "preview": "vite preview",
-    "deploy": "npm run build && wrangler pages deploy dist --project-name uchu"
+    "test": "vitest run",
+    "loadtest": "node scripts/loadtest.mjs",
+    "deploy": "npm run build && wrangler pages deploy client/dist --project-name uchu",
+    "deploy:server": "wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261015.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
+    "vitest": "^5.0.4",
     "wrangler": "^4.151.0"
   }
 }

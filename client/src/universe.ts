@@ -1,6 +1,6 @@
 import { PALETTES, CROWD_R, GHOST_TTL, ttlFor } from "./constants";
 import type { RGB } from "./constants";
-import type { StarData, LinkData, ClientMessage } from "../shared/protocol";
+import type { StarData, LinkData, ClientMessage } from "../../shared/protocol";
 
 // ---------------------------------------------------------------------------
 // Universe — 星・線・幽霊・他人・波紋の状態と生態系ルール
