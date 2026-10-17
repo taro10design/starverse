@@ -7,7 +7,9 @@
 
 const base = (process.argv[2] ?? "http://localhost:8787").replace(/\/$/, "");
 const FULL = process.argv.includes("--full");
-const wsUrl = (process.env.E2E_WS ?? base.replace(/^http/, "ws").replace(/^wss?:\/\/uchu\.pages\.dev/, "wss://universe.taroooo0w0.workers.dev")) + "/ws";
+const wsUrl =
+  (process.env.E2E_WS ??
+    base.replace(/^http/, "ws").replace(/^wss?:\/\/uchu\.pages\.dev/, "wss://universe.taroooo0w0.workers.dev")) + "/ws";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
@@ -64,8 +66,19 @@ try {
   const B = client("B");
   await Promise.all([A.opened, B.opened]);
   const welcomeA = await A.waitFor((m) => m.t === "welcome");
-  check("welcome を受け取る（id・sendMs・star/link 一覧つき）", !!welcomeA && typeof welcomeA.id === "string" && typeof welcomeA.sendMs === "number" && Array.isArray(welcomeA.stars) && Array.isArray(welcomeA.links));
-  check("送信間隔の指示が妥当（100〜1000ms）", welcomeA && welcomeA.sendMs >= 100 && welcomeA.sendMs <= 1000, `sendMs=${welcomeA?.sendMs}`);
+  check(
+    "welcome を受け取る（id・sendMs・star/link 一覧つき）",
+    !!welcomeA &&
+      typeof welcomeA.id === "string" &&
+      typeof welcomeA.sendMs === "number" &&
+      Array.isArray(welcomeA.stars) &&
+      Array.isArray(welcomeA.links),
+  );
+  check(
+    "送信間隔の指示が妥当（100〜1000ms）",
+    welcomeA && welcomeA.sendMs >= 100 && welcomeA.sendMs <= 1000,
+    `sendMs=${welcomeA?.sendMs}`,
+  );
 
   // --- 位置の配信 ---
   A.send({ t: "p", x: 0.5, y: 0.5, c: 1, v: [-1, -1, 2, 2] });
@@ -74,7 +87,11 @@ try {
   const seen = await A.waitFor((m) => m.t === "ps" && m.d.some((p) => p[0] === welcomeB?.id));
   check("他の人の位置(ps)が視界内に届く", !!seen);
   const tuple = seen?.d.find((p) => p[0] === welcomeB?.id);
-  check("位置のタプルが [id, x, y, color] の形", Array.isArray(tuple) && tuple.length === 4 && typeof tuple[1] === "number" && tuple[3] === 2, JSON.stringify(tuple));
+  check(
+    "位置のタプルが [id, x, y, color] の形",
+    Array.isArray(tuple) && tuple.length === 4 && typeof tuple[1] === "number" && tuple[3] === 2,
+    JSON.stringify(tuple),
+  );
 
   // 遠い視界の相手には届かない（視界ベースの配信）
   const FAR = client("FAR");
@@ -109,7 +126,11 @@ try {
   // --- 統計 ---
   const statsRes = await fetch(base + "/stats");
   const stats = statsRes.ok ? await statsRes.json() : null;
-  check("/stats が接続数を返す", !!stats && typeof stats.totalConnections === "number" && stats.totalConnections >= 2 && Array.isArray(stats.rooms), stats ? `total=${stats.totalConnections}` : `status ${statsRes.status}`);
+  check(
+    "/stats が接続数を返す",
+    !!stats && typeof stats.totalConnections === "number" && stats.totalConnections >= 2 && Array.isArray(stats.rooms),
+    stats ? `total=${stats.totalConnections}` : `status ${statsRes.status}`,
+  );
 
   if (FULL) {
     // --- 星と線 ---
@@ -171,7 +192,11 @@ try {
     await C4.opened;
     const w4 = await C4.waitFor((m) => m.t === "welcome");
     const mineLeft = w4.stars.filter((s) => cleanup.includes(s.id)).length;
-    check("後片付けで作った星と線が残っていない", mineLeft === 0 && !w4.links.some((l) => l.id === ids.l1), `残り ${mineLeft} 個`);
+    check(
+      "後片付けで作った星と線が残っていない",
+      mineLeft === 0 && !w4.links.some((l) => l.id === ids.l1),
+      `残り ${mineLeft} 個`,
+    );
     C4.ws.close();
   }
 

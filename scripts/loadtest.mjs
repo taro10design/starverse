@@ -60,7 +60,8 @@ function makeClient(i, { probe = false } = {}) {
   return me;
 }
 
-const pct = (arr, p) => (arr.length ? arr.slice().sort((a, b) => a - b)[Math.min(arr.length - 1, Math.floor(arr.length * p))] : NaN);
+const pct = (arr, p) =>
+  arr.length ? arr.slice().sort((a, b) => a - b)[Math.min(arr.length - 1, Math.floor(arr.length * p))] : NaN;
 
 console.log(`connecting ${N} clients to ${URL_} ...`);
 const clients = [];
@@ -70,7 +71,8 @@ clients.push(observer, sender);
 const MAX_IN_FLIGHT = 30; // 接続処理中の数がこれを超えたら待つ（ローカルの接続待ちキューをあふれさせない）
 for (let i = 2; i < N; i++) {
   const rampStart = performance.now();
-  while (clients.length - stats.open - stats.errors > MAX_IN_FLIGHT && performance.now() - rampStart < 10_000) await sleep(20);
+  while (clients.length - stats.open - stats.errors > MAX_IN_FLIGHT && performance.now() - rampStart < 10_000)
+    await sleep(20);
   clients.push(makeClient(i));
 }
 for (let w = 0; w < 100 && stats.open < N; w++) await sleep(200); // 全員の接続完了を待つ（最大20秒）
@@ -98,7 +100,9 @@ console.log(`clients open/closed : ${stats.open}/${stats.closed} (errors ${stats
 console.log(`received msgs/s     : ${rate(stats.msgs)} (全クライアント合計)`);
 console.log(`received KB/s       : ${rate(stats.bytes / 1024)} (全クライアント合計)`);
 console.log(`loadgen loop lag  : p95=${(lag.percentile(95) / 1e6).toFixed(1)}ms （大きい場合は計測側が飽和している）`);
-console.log(`probe latency ms    : p50=${pct(latencies, 0.5).toFixed(1)} p95=${pct(latencies, 0.95).toFixed(1)} max=${Math.max(...latencies, 0).toFixed(1)} (n=${latencies.length})`);
+console.log(
+  `probe latency ms    : p50=${pct(latencies, 0.5).toFixed(1)} p95=${pct(latencies, 0.95).toFixed(1)} max=${Math.max(...latencies, 0).toFixed(1)} (n=${latencies.length})`,
+);
 
 for (const c of clients) {
   clearTimeout(c.timer);
