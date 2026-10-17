@@ -2,18 +2,23 @@
 // 世界のルールは World、メッセージごとの処理は handlers.ts にあり、ここは入出力だけ。
 //
 // 接続の流れ: WebSocket を受け付ける → クライアントの最初の `hello {uid}` で持ち主 ID（uid のハッシュ）を
-// 接続に固定する → `welcome` を返す。hello の前に来た他のメッセージは無視し、
+// 接続に固定する → `welcome` を返す。hello の前に来た他のメッセージは無視し（違反として数える）、
 // helloTimeoutMs 以内に hello が来ない接続は alarm で切る。uid そのものは保存も配信もしない。
+//
+// 受信は 1 通ごとに inbound.ts の関門を通す（読む前のトークン → hello 前後の振り分け → 追加のトークン）。
+// 接続元は CF-Connecting-IP の HMAC（秘密は storage の `ipkey`）で数え、生の IP は持たない。
 
 import type { LinkData, PeerDot, PresenceTuple, ServerMessage, StarData } from "../../shared/protocol";
-import { COST, LIMITS, RATE, sendMsFor } from "./config";
+import { LIMITS, RATE, sendMsFor } from "./config";
 import type { Env } from "./env";
 import { dispatch, type BroadcastOptions, type Conn, type Member, type RoomApi } from "./handlers";
-import { ipKey, isLoopback, ownerFromUid } from "./identity";
-import { TokenBucket } from "./rate-limit";
+import { importIpSecret, ipKey, isLoopback, newIpSecret, ownerFromUid, storedIpSecret } from "./identity";
+import { classify, extraCost, IdentifyBacklog, screenRaw, ViolationCounter } from "./inbound";
+import { Cooldown, TokenBucket, WindowCounter } from "./rate-limit";
 import { inView } from "./spatial";
-import { INVALID_HELLO, parseClientMessage } from "./validate";
 import { World } from "./world";
+
+const IP_SECRET_KEY = "ipkey"; // storage のキー。星・線（s: / l:）とは重ならない
 
 // ハイバネートを越えて残す接続ごとの最小情報（uid は持たない）
 interface Session {
@@ -44,7 +49,10 @@ export class Universe implements RoomApi, DurableObject {
   readonly world = new World();
   private conns = new Map<WebSocket, Conn>();
   // hello のハッシュ計算中の接続と、その間に届いたメッセージ（計算が済んだら順に処理する）
-  private identifying = new Map<Conn, string[]>();
+  private identifying = new Map<Conn, IdentifyBacklog>();
+  // 接続元ごとの、直近 60 秒の接続の回数（メモリ上の近似。ハイバネートで失われてよい）
+  private connectRate = new WindowCounter(60_000, LIMITS.maxConnectsPerIpPerMinute, LIMITS.maxTrackedIps);
+  private ipSecret: CryptoKey | null = null; // 接続元の鍵（HMAC）の秘密。起動時に storage から読む
   // 片付け済みの接続。あとから届く close で、永続属性から接続を作り直して leave を二重に送らないため
   private gone = new WeakSet<WebSocket>();
   private ticker: ReturnType<typeof setInterval> | null = null;
@@ -60,10 +68,11 @@ export class Universe implements RoomApi, DurableObject {
     // アプリ層の ping には、Durable Object を起こさずに pong を返す（死活監視用）
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.ctx.blockConcurrencyWhile(async () => {
+      this.ipSecret = await importIpSecret(await this.loadIpSecret());
       const stars = await this.ctx.storage.list<StarData>({ prefix: "s:" });
       const links = await this.ctx.storage.list<LinkData>({ prefix: "l:" });
-      this.world.load(stars.values(), links.values());
-      this.persist(); // load で捨てた線を保存先からも消す
+      this.world.load(stars.values(), links.values(), Date.now());
+      this.persist(); // load で捨てた星・線（旧形式の持ち主、端の無い線）を保存先からも消す
       // ハイバネートから起きた場合、生きている接続を取り込み直す
       for (const ws of this.ctx.getWebSockets()) this.connOf(ws);
       this.sendMs = sendMsFor(this.conns.size);
@@ -75,61 +84,77 @@ export class Universe implements RoomApi, DurableObject {
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname === "/stats") return Response.json(this.stats());
 
-    // 接続元は Worker が転送する CF-Connecting-IP。生の IP は持たずハッシュにする。
+    // 接続元は Worker が転送する CF-Connecting-IP。生の IP は持たず HMAC にする（IPv6 は /64 単位）。
     // ローカル開発（wrangler dev）の接続元は制限しない（負荷試験で同じ接続元から多数つなぐため）
     const rawIp = request.headers.get("CF-Connecting-IP");
-    const ip = rawIp && !isLoopback(rawIp) ? await ipKey(rawIp) : null;
+    let ip: string | null = null;
+    if (rawIp && !isLoopback(rawIp)) {
+      if (!this.ipSecret) return new Response("not ready", { status: 503 }); // 起動処理が失敗している
+      ip = await ipKey(rawIp, this.ipSecret);
+    }
 
     // 満員なら Worker に次の空を探させる
     if (this.conns.size >= LIMITS.roomCapacity) {
       return new Response("room full", { status: 503, headers: { "x-room-full": "1" } });
     }
-    // 同じ接続元からの多重接続は断る。次の空には回さない（空を渡り歩いて上限を増やせないように）
+    // 同じ接続元からの多重接続・つなぎ直しの連打は断る。次の空には回さない（空を渡り歩いて上限を増やせないように）
     if (ip !== null && this.countIp(ip) >= LIMITS.maxConnsPerIp) {
       return new Response("too many connections", { status: 503 });
     }
+    const now = Date.now();
+    if (ip !== null && !this.connectRate.allow(ip, now)) {
+      return new Response("too many connection attempts", { status: 503 });
+    }
+
+    // hello が来なければ切るための alarm を、ソケットを受け入れる前に用意する
+    // （受け入れてから失敗すると、締め切りの無い接続が残る）
+    await this.ensureAlarm(now + LIMITS.helloTimeoutMs);
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
-
-    const now = Date.now();
     const session: Session = { id: crypto.randomUUID().slice(0, 8), owner: null, ip, since: now, x: 0.5, y: 0.5, c: 0 };
     server.serializeAttachment(session);
     this.conns.set(server, this.makeConn(server, session));
-    await this.ensureAlarm(now + LIMITS.helloTimeoutMs); // hello が来なければ切る
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const conn = this.connOf(ws);
-    if (!conn || typeof message !== "string" || message.length > LIMITS.maxMessageBytes) return;
+    if (!conn) return;
+    // JSON を読む前に 1 通ぶんのトークンを取る（大きすぎる・文字列でないものも数える）
+    const verdict = screenRaw(message, conn.bucket, Date.now());
+    if (verdict === "close") this.close(conn, 1008, "rate limit");
+    if (verdict !== "accept" || typeof message !== "string") return;
+    this.handleText(conn, message);
+  }
 
+  // 関門を通ったメッセージを処理する。hello の処理中に貯めた分も、ここから処理する（トークンは取り済み）
+  private handleText(conn: Conn, message: string) {
     // hello の処理中に届いたものは、持ち主が決まってから処理する
     const backlog = this.identifying.get(conn);
     if (backlog) {
-      if (backlog.length < LIMITS.maxBacklogWhileIdentifying) backlog.push(message);
+      backlog.push(message);
       return;
     }
 
-    const msg = parseClientMessage(message);
-    if (msg === null) return;
-    if (msg === INVALID_HELLO) {
-      if (!isMember(conn)) this.close(conn, 1008, "invalid uid"); // 切り詰めて受け入れることはしない
+    const step = classify(isMember(conn), message);
+    if (step.do === "identify") return this.identify(conn, step.uid);
+    if (step.do === "invalid-uid") return this.close(conn, 1008, "invalid uid"); // 切り詰めて受け入れることはしない
+    if (step.do === "violation") {
+      if (conn.violations.record()) this.close(conn, 1008, "protocol violation");
       return;
     }
-    if (!isMember(conn)) {
-      if (msg.t === "hello") this.identify(conn, msg.uid); // hello の前の他のメッセージは無視する
-      return;
-    }
-    if (msg.t === "hello") return; // 持ち主は接続につき 1 つに固定する
+    if (step.do === "ignore" || !isMember(conn)) return;
 
+    const msg = step.msg;
     const now = Date.now();
-    if (!conn.bucket.take(COST[msg.t], now)) {
+    const extra = extraCost(msg.t);
+    if (extra > 0 && !conn.bucket.take(extra, now)) {
       // 置いたつもりの星・線を、送り主の画面から取り消してもらう
       if (msg.t === "star" || msg.t === "link") this.send(conn, { t: "reject", kind: msg.t, id: msg.id });
-      if (conn.bucket.consecutiveDrops > RATE.closeAfterDrops) this.close(conn, 1008, "rate limit");
+      if (conn.bucket.excessDrops > RATE.closeAfterDrops) this.close(conn, 1008, "rate limit");
       return;
     }
     try {
@@ -233,12 +258,12 @@ export class Universe implements RoomApi, DurableObject {
 
   // ハッシュの計算は非同期なので、その間に届いたメッセージは identifying に貯めておく
   private identify(conn: Conn, uid: string) {
-    const backlog: string[] = [];
+    const backlog = new IdentifyBacklog(LIMITS.maxBacklogWhileIdentifying);
     this.identifying.set(conn, backlog);
     this.ctx.waitUntil(this.admit(conn, uid, backlog));
   }
 
-  private async admit(conn: Conn, uid: string, backlog: string[]) {
+  private async admit(conn: Conn, uid: string, backlog: IdentifyBacklog) {
     let owner: string;
     try {
       owner = await ownerFromUid(uid);
@@ -274,7 +299,12 @@ export class Universe implements RoomApi, DurableObject {
     });
     this.markDirty(conn); // 他の人に新しい光を知らせる
 
-    for (const raw of backlog) this.webSocketMessage(conn.ws, raw);
+    // 貯めきれなかった星・線は断ったことを伝え（welcome のあとなので、クライアントは取り消せる）、残りを順に処理する
+    for (const r of backlog.rejects) this.send(conn, r);
+    for (const raw of backlog.items) {
+      if (this.conns.get(conn.ws) !== conn) return; // 処理の途中で切った
+      this.handleText(conn, raw);
+    }
   }
 
   // --- 位置のまとめ配信 ---
@@ -432,6 +462,8 @@ export class Universe implements RoomApi, DurableObject {
       view: null,
       dirty: false,
       bucket: new TokenBucket(RATE.capacity, RATE.refillPerSec, now),
+      violations: new ViolationCounter(LIMITS.maxProtocolViolations),
+      admired: new Cooldown(LIMITS.admireCooldownMs, LIMITS.admireCooldownEntries),
       attachedAt: now,
     };
   }
@@ -481,6 +513,15 @@ export class Universe implements RoomApi, DurableObject {
       if (!isMember(c)) at = Math.min(at, Math.max(now + 1000, c.since + LIMITS.helloTimeoutMs));
     }
     return at;
+  }
+
+  // IP の鍵の秘密。無ければ（初回起動・壊れた値）作って保存する。環境変数やシークレットは使わない
+  private async loadIpSecret(): Promise<Uint8Array> {
+    const stored = storedIpSecret(await this.ctx.storage.get(IP_SECRET_KEY));
+    if (stored) return stored;
+    const fresh = newIpSecret();
+    await this.ctx.storage.put(IP_SECRET_KEY, fresh);
+    return fresh;
   }
 
   private async ensureAlarm(at: number) {

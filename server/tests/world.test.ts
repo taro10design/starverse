@@ -4,6 +4,7 @@ import { LIMITS } from "../src/config";
 import { World } from "../src/world";
 
 const T0 = 1_000_000;
+const OWNER = "0123456789abcdef0123456789abcdef"; // 保存済みデータの持ち主 ID（OWNER_ID_PATTERN の形式）
 
 describe("World: 星", () => {
   it("星を置ける", () => {
@@ -150,6 +151,60 @@ describe("World: 寿命（prune）", () => {
   });
 });
 
+describe("World: 同じ接続元（IP）が置ける星の合計", () => {
+  it("同じ接続元の星は、持ち主が違っても合わせて maxStarsPerIp まで", () => {
+    const w = new World();
+    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) {
+      const owner = `owner${i % 4}`; // 4 人の持ち主に分けても
+      expect(w.placeStar(owner, `s${i}`, i, 0, 0, T0, "ipA")).not.toBeNull();
+    }
+    expect(w.placeStar("owner9", "over", 0, 0, 0, T0, "ipA")).toBeNull();
+    expect(w.placeStar("owner9", "other", 0, 0, 0, T0, "ipB")).not.toBeNull(); // 別の接続元は置ける
+    expect(w.placeStar("owner9", "local", 0, 0, 0, T0, null)).not.toBeNull(); // 接続元が分からないときは数えない
+  });
+
+  it("星が消えると（消す・寿命）、その接続元の枠が空く", () => {
+    const w = new World();
+    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) w.placeStar(`o${i % 4}`, `s${i}`, i, 0, 0, T0, "ipA");
+    w.removeStar("s0");
+    expect(w.placeStar("o0", "again", 0, 0, 0, T0, "ipA")).not.toBeNull();
+    expect(w.placeStar("o0", "again2", 0, 0, 0, T0, "ipA")).toBeNull();
+    w.prune(T0 + STAR_TTL + 1, true); // 全部寿命で消える
+    expect(w.placeStar("o0", "fresh", 0, 0, 0, T0 + STAR_TTL + 2, "ipA")).not.toBeNull();
+  });
+
+  it("自分の星の置き直しは、新しい星として数えない", () => {
+    const w = new World();
+    for (let i = 0; i < LIMITS.maxStarsPerIp; i++) w.placeStar(`o${i % 4}`, `s${i}`, i, 0, 0, T0, "ipA");
+    expect(w.placeStar("o0", "s0", 5, 5, 1, T0 + 1, "ipA")).not.toBeNull();
+  });
+});
+
+describe("World: きらめきで延びる寿命の上限", () => {
+  it("作成から maxStarAgeMs を過ぎた星は、きらめいても寿命が延びない", () => {
+    const w = new World();
+    w.placeStar("alice", "s1", 0, 0, 0, T0);
+    expect(w.admire("s1", T0 + LIMITS.maxStarAgeMs - 1)?.ts).toBe(T0 + LIMITS.maxStarAgeMs - 1);
+    expect(w.admire("s1", T0 + LIMITS.maxStarAgeMs + 1)).toBeNull();
+    expect(w.stars.get("s1")?.ts).toBe(T0 + LIMITS.maxStarAgeMs - 1);
+  });
+
+  it("持ち主の置き直しでは作成時刻を変えない（置き直しで上限を逃れられない）", () => {
+    const w = new World();
+    w.placeStar("alice", "s1", 0, 0, 0, T0);
+    w.placeStar("alice", "s1", 1, 1, 0, T0 + 1000);
+    expect(w.admire("s1", T0 + LIMITS.maxStarAgeMs + 1)).toBeNull();
+  });
+
+  it("読み込んだ星は、作成時刻が分からないので読み込んだ時刻から数える", () => {
+    const w = new World();
+    const LOAD = T0 + 5 * LIMITS.maxStarAgeMs;
+    w.load([{ id: "a", x: 0, y: 0, c: 0, by: OWNER, ts: T0 }], [], LOAD);
+    expect(w.admire("a", LOAD + LIMITS.maxStarAgeMs - 1)).not.toBeNull();
+    expect(w.admire("a", LOAD + LIMITS.maxStarAgeMs + 1)).toBeNull();
+  });
+});
+
 describe("World: 永続化", () => {
   it("変更分だけを返し、取り出すとリセットされる", () => {
     const w = new World();
@@ -167,10 +222,11 @@ describe("World: 永続化", () => {
     const w = new World();
     w.load(
       [
-        { id: "a", x: 0, y: 0, c: 0, by: "u", ts: T0 },
-        { id: "b", x: 1, y: 1, c: 0, by: "u", ts: T0 },
+        { id: "a", x: 0, y: 0, c: 0, by: OWNER, ts: T0 },
+        { id: "b", x: 1, y: 1, c: 0, by: OWNER, ts: T0 },
       ],
-      [{ id: "l1", a: "a", b: "b", by: "u", ts: T0 }],
+      [{ id: "l1", a: "a", b: "b", by: OWNER, ts: T0 }],
+      T0,
     );
     expect(w.stars.size).toBe(2);
     expect(w.links.size).toBe(1);
@@ -179,10 +235,67 @@ describe("World: 永続化", () => {
 
   it("load で端点の無い線は捨て、保存先からも消す", () => {
     const w = new World();
-    w.load([{ id: "a", x: 0, y: 0, c: 0, by: "u", ts: T0 }], [{ id: "l1", a: "a", b: "ghost", by: "u", ts: T0 }]);
+    w.load(
+      [{ id: "a", x: 0, y: 0, c: 0, by: OWNER, ts: T0 }],
+      [{ id: "l1", a: "a", b: "ghost", by: OWNER, ts: T0 }],
+      T0,
+    );
     expect(w.stars.size).toBe(1);
     expect(w.links.size).toBe(0);
     expect(w.drainChanges()).toEqual({ put: {}, del: ["l:l1"] });
+  });
+
+  it("load で、持ち主が持ち主 ID の形式でない（旧形式の生の uid の）星・線は捨て、保存先からも消す", () => {
+    const RAW_UID = "abcdef12-3456-7890-abcd-ef1234567890"; // 旧プロトコルでは by に uid そのものが入っていた
+    const w = new World();
+    w.load(
+      [
+        { id: "old", x: 0, y: 0, c: 0, by: RAW_UID, ts: T0 },
+        { id: "new", x: 1, y: 1, c: 0, by: OWNER, ts: T0 },
+        { id: "new2", x: 2, y: 2, c: 0, by: OWNER, ts: T0 },
+      ],
+      [
+        { id: "l-old-end", a: "old", b: "new", by: OWNER, ts: T0 }, // 端の星が捨てられたので一緒に捨てる
+        { id: "l-old-by", a: "new", b: "new2", by: RAW_UID, ts: T0 }, // 線の持ち主が旧形式
+        { id: "l-ok", a: "new2", b: "new", by: OWNER, ts: T0 },
+      ],
+      T0,
+    );
+    expect([...w.stars.keys()].sort()).toEqual(["new", "new2"]);
+    expect([...w.links.keys()]).toEqual(["l-ok"]);
+    expect([...w.stars.values(), ...w.links.values()].some((v) => v.by === RAW_UID)).toBe(false);
+    const changes = w.drainChanges();
+    expect(changes.put).toEqual({});
+    expect(changes.del.sort()).toEqual(["l:l-old-by", "l:l-old-end", "s:old"]);
+  });
+
+  it("load で、大文字や長さ違いの持ち主も旧形式として捨てる", () => {
+    const w = new World();
+    w.load(
+      [
+        { id: "upper", x: 0, y: 0, c: 0, by: OWNER.toUpperCase(), ts: T0 },
+        { id: "short", x: 0, y: 0, c: 0, by: OWNER.slice(1), ts: T0 },
+        { id: "long", x: 0, y: 0, c: 0, by: OWNER + "0", ts: T0 },
+      ],
+      [],
+      T0,
+    );
+    expect(w.stars.size).toBe(0);
+    expect(w.drainChanges().del.sort()).toEqual(["s:long", "s:short", "s:upper"]);
+  });
+
+  it("load で捨てた星は持ち主の枠を使わない", () => {
+    const w = new World();
+    const old = Array.from({ length: LIMITS.maxStars }, (_, i) => ({
+      id: `o${i}`,
+      x: i,
+      y: 0,
+      c: 0,
+      by: `legacy-uid-${i}`,
+      ts: T0,
+    }));
+    w.load(old, [], T0);
+    expect(w.placeStar(OWNER, "fresh", 0, 0, 0, T0)).not.toBeNull(); // 全体の上限にも数えない
   });
 
   it("load で捨てた線は持ち主の枠を使わない", () => {
@@ -191,17 +304,18 @@ describe("World: 永続化", () => {
       id: `g${i}`,
       a: "a",
       b: `ghost${i}`,
-      by: "alice",
+      by: OWNER,
       ts: T0,
     }));
     w.load(
       [
-        { id: "a", x: 0, y: 0, c: 0, by: "alice", ts: T0 },
-        { id: "b", x: 1, y: 1, c: 0, by: "alice", ts: T0 },
+        { id: "a", x: 0, y: 0, c: 0, by: OWNER, ts: T0 },
+        { id: "b", x: 1, y: 1, c: 0, by: OWNER, ts: T0 },
       ],
       ghosts,
+      T0,
     );
-    expect(w.addLink("alice", "l1", "a", "b", T0)).not.toBeNull();
+    expect(w.addLink(OWNER, "l1", "a", "b", T0)).not.toBeNull();
   });
 
   it("置いて消した星は put に残らない", () => {

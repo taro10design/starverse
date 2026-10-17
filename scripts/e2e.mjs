@@ -115,6 +115,7 @@ try {
     "welcome の星・線の持ち主に自分の uid が出てこない",
     !!welcomeA && !welcomeA.stars.some((s) => s.by === A.uid) && !welcomeA.links.some((l) => l.by === A.uid),
   );
+  // 空に 1 人だけのときは最長の 1000ms になる（A が B より先に welcome を受け取った場合）
   check(
     "送信間隔の指示が妥当（100〜1000ms）",
     welcomeA && welcomeA.sendMs >= 100 && welcomeA.sendMs <= 1000,
@@ -218,6 +219,27 @@ try {
     );
     check("hello の前には何も届かない（welcome が最初）", EARLY.got[0]?.t === "welcome", EARLY.got[0]?.t);
     EARLY.ws.close();
+
+    // --- 手順の違反（hello 前の hello 以外、2 回目以降の hello）が続く接続は切断される ---
+    const NOISY = client("NOISY");
+    await NOISY.opened;
+    await NOISY.welcome();
+    for (let i = 0; i < 25; i++) NOISY.hello();
+    const noisyClosed = await NOISY.waitClosed();
+    check(
+      "hello を繰り返す接続は 1008 で切断される",
+      noisyClosed && NOISY.closeCode === 1008,
+      `code=${NOISY.closeCode}`,
+    );
+    const PRE = client("PRE", { hello: false });
+    await PRE.opened;
+    for (let i = 0; i < 25; i++) PRE.send({ t: "p", x: 0.5, y: 0.5, c: 0 });
+    const preClosed = await PRE.waitClosed();
+    check(
+      "hello の前に hello 以外を送り続ける接続は 1008 で切断される",
+      preClosed && PRE.closeCode === 1008 && !PRE.got.some((m) => m.t === "welcome"),
+      `code=${PRE.closeCode}`,
+    );
 
     // --- 星と線 ---
     const ids = { s1: newId(), s2: newId(), l1: newId() };

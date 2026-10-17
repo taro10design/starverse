@@ -13,6 +13,9 @@ export const LIMITS = {
   // --- 部屋（空）のスケール ---
   roomCapacity: 300, // 1つの空に入れる人数。超えたら次の空へ振り分ける
   maxConnsPerIp: 4, // 1つの空に同じ接続元から入れる数。超えたら断る（次の空には回さない）
+  maxConnectsPerIpPerMinute: 12, // 1つの空に同じ接続元がつなぎ直せる回数（直近 60 秒）。超えたら 503
+  maxStarsPerIp: 128, // 同じ接続元が置いた星の合計（持ち主を変えても合わせて数える。メモリ上の近似）
+  maxTrackedIps: 10_000, // 接続の頻度を覚えておく接続元の数（メモリの上限）
   maxRooms: 8, // 振り分け先の空の数（space, space-2, ...）
 
   // --- 受信量の予算 ---
@@ -45,6 +48,13 @@ export const LIMITS = {
   coordMax: 10_000, // ワールド座標の絶対値の上限
   helloTimeoutMs: 10_000, // 接続してからこの時間内に hello が来なければ切断する
   maxBacklogWhileIdentifying: 32, // hello のハッシュ計算中に届いたメッセージを貯めておく数
+  maxRejectsWhileIdentifying: 256, // 貯めきれなかった星・線の reject を、welcome のあとに返す数
+  maxProtocolViolations: 20, // hello 前の hello 以外・2 回目以降の hello がこの回数に達したら 1008 で切断する
+
+  // --- きらめき（admire） ---
+  admireCooldownMs: 5000, // 同じ接続が同じ星をきらめかせられる間隔
+  admireCooldownEntries: 256, // 接続ごとに覚えておく星の数（メモリの上限）
+  maxStarAgeMs: 24 * 60 * 60 * 1000, // きらめきで寿命が延びるのは、星の作成からこの時間まで
 } as const;
 
 // 接続ごとのレート制限（トークンバケット）。コストが大きい操作ほど重い
@@ -53,9 +63,10 @@ export const RATE = {
   // 一気に送っても捨てられないよう、星 64 個ぶんのコスト（2×64）に余裕を足した値にしている
   capacity: 200,
   refillPerSec: 40, // 毎秒の回復量
-  closeAfterDrops: 200, // 連続でこの回数あふれたら切断する
+  closeAfterDrops: 200, // あふれの数（あふれで +1、通るたびに -1）がこれを超えたら切断する
 } as const;
 
+// 1 通ごとに、JSON を読む前に 1 トークン取る。読んだあとは COST との差だけ追加で取る（inbound.ts）
 export const COST = {
   p: 1,
   pulse: 4, // 視界内の全員に配るので重め
@@ -71,9 +82,11 @@ export function roomName(index: number): string {
   return index === 0 ? "space" : `space-${index + 1}`;
 }
 
-// 人数 n の空で、各クライアントが位置を送る間隔（ms）。50ms 刻みに丸めて、頻繁に変わらないようにする
+// 人数 n の空で、各クライアントが位置を送る間隔（ms）。50ms 刻みに丸めて、頻繁に変わらないようにする。
+// 1 人以下のときは誰にも見えないので最長にする（受信メッセージは 20 通 = 1 リクエストで課金される。ADR 0008）
 export function sendMsFor(n: number): number {
-  const raw = (Math.max(1, n) * 1000) / LIMITS.inboundBudgetPerSec;
+  if (n <= 1) return LIMITS.sendMsMax;
+  const raw = (n * 1000) / LIMITS.inboundBudgetPerSec;
   const stepped = Math.ceil(raw / 50) * 50;
   return Math.min(LIMITS.sendMsMax, Math.max(LIMITS.sendMsMin, stepped));
 }

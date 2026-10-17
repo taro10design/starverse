@@ -2,6 +2,7 @@
 // 戻り値で「何が起きたか」を返し、配信・永続化は呼び出し側（room.ts）が行う。
 // 依存がないので、単体テストで挙動を確かめられる（tests/world.test.ts）。
 
+import { OWNER_ID_PATTERN } from "../../shared/limits";
 import type { LinkData, StarData } from "../../shared/protocol";
 import { CROWD_R, STAR_TTL, ttlFor } from "../../shared/rules";
 import { LIMITS } from "./config";
@@ -28,22 +29,43 @@ export class World {
   private starsByOwner = new Map<string, number>();
   private linksByOwner = new Map<string, number>();
   private linksByStar = new Map<string, Set<string>>(); // 星 → その星につながる線
+  // 以下はメモリ上だけの情報（保存しない。StarData を変えないため）。起動し直すと load の時点からになる
+  private createdAt = new Map<string, number>(); // 星 → 作成時刻（きらめきで延ばせる寿命の上限に使う）
+  private originOf = new Map<string, string>(); // 星 → 置いた接続元の鍵
+  private starsByOrigin = new Map<string, number>(); // 接続元の鍵 → 星の数
   private dirtyPut = new Set<string>();
   private dirtyDel = new Set<string>();
   private lastPrune = 0;
 
   // --- 星 ---
 
-  // 星を置く。上限超え・他人の星の上書きは null
-  placeStar(owner: string, id: string, x: number, y: number, c: number, now: number): StarData | null {
+  // 星を置く。上限超え・他人の星の上書きは null。
+  // origin は置いた接続元の鍵（同じ接続元の星を合わせて数える）。分からなければ null で、数えない
+  placeStar(
+    owner: string,
+    id: string,
+    x: number,
+    y: number,
+    c: number,
+    now: number,
+    origin: string | null = null,
+  ): StarData | null {
     const existing = this.stars.get(id);
     if (existing) {
       if (existing.by !== owner) return null; // 他人の星は上書きできない
-    } else if (this.stars.size >= LIMITS.maxStars || (this.starsByOwner.get(owner) ?? 0) >= LIMITS.maxStarsPerUser) {
+    } else if (
+      this.stars.size >= LIMITS.maxStars ||
+      (this.starsByOwner.get(owner) ?? 0) >= LIMITS.maxStarsPerUser ||
+      (origin !== null && (this.starsByOrigin.get(origin) ?? 0) >= LIMITS.maxStarsPerIp)
+    ) {
       return null;
     }
     const star: StarData = { id, x, y, c, by: owner, ts: now };
-    this.putStar(star);
+    this.putStar(star, now);
+    if (!existing && origin !== null) {
+      this.originOf.set(id, origin);
+      this.bump(this.starsByOrigin, origin, 1);
+    }
     return star;
   }
 
@@ -55,10 +77,11 @@ export class World {
     return { star, links };
   }
 
-  // きらめき＝寿命のリセット
+  // きらめき＝寿命のリセット。延ばせるのは作成から maxStarAgeMs まで（それを過ぎたら null）
   admire(id: string, now: number): StarData | null {
     const star = this.stars.get(id);
     if (!star) return null;
+    if (now - (this.createdAt.get(id) ?? now) > LIMITS.maxStarAgeMs) return null;
     star.ts = now;
     this.markPut(starKey(id));
     return star;
@@ -117,12 +140,17 @@ export class World {
 
   // --- 永続化 ---
 
-  // 起動時に保存済みの状態を取り込む（変更扱いにはしない）。
-  // 端の星が無い線は取り込まず、保存先からも消す（残すと起動のたびに読んで捨てることになる）
-  load(stars: Iterable<StarData>, links: Iterable<LinkData>) {
-    for (const s of stars) this.putStar(s, false);
+  // 起動時に保存済みの状態を取り込む（変更扱いにはしない）。作成時刻は保存していないので now とする。
+  // 次のものは取り込まず、保存先からも消す（残すと起動のたびに読んで捨てることになる）:
+  // - 持ち主が持ち主 ID の形式でない星・線（旧プロトコルの生の uid が入っている。配信すると uid が漏れる）
+  // - 端の星が無い線（上で捨てた星につながる線を含む）
+  load(stars: Iterable<StarData>, links: Iterable<LinkData>, now: number) {
+    for (const s of stars) {
+      if (OWNER_ID_PATTERN.test(s.by)) this.putStar(s, now, false);
+      else this.markDel(starKey(s.id));
+    }
     for (const l of links) {
-      if (this.stars.has(l.a) && this.stars.has(l.b)) this.putLink(l, false);
+      if (OWNER_ID_PATTERN.test(l.by) && this.stars.has(l.a) && this.stars.has(l.b)) this.putLink(l, false);
       else this.markDel(linkKey(l.id));
     }
   }
@@ -143,9 +171,12 @@ export class World {
 
   // --- 内部 ---
 
-  private putStar(star: StarData, track = true) {
+  private putStar(star: StarData, now: number, track = true) {
     const prev = this.stars.get(star.id);
-    if (!prev) this.bump(this.starsByOwner, star.by, 1);
+    if (!prev) {
+      this.bump(this.starsByOwner, star.by, 1);
+      this.createdAt.set(star.id, now);
+    }
     this.stars.set(star.id, star);
     if (track) this.markPut(starKey(star.id));
   }
@@ -162,6 +193,12 @@ export class World {
     this.linksByStar.delete(star.id);
     this.stars.delete(star.id);
     this.bump(this.starsByOwner, star.by, -1);
+    this.createdAt.delete(star.id);
+    const origin = this.originOf.get(star.id);
+    if (origin !== undefined) {
+      this.originOf.delete(star.id);
+      this.bump(this.starsByOrigin, origin, -1);
+    }
     this.markDel(starKey(star.id));
     return removedLinks;
   }

@@ -12,6 +12,7 @@ const SPREAD = 3; // 世界の広さ（1 = 1画面ぶん）。人は 0..SPREAD �
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stats = { bytes: 0, msgs: 0, open: 0, closed: 0, errors: 0 };
+const types = new Map(); // 受信したメッセージの種類別の件数（想定外のトラフィックを見つけるため）
 const sentAt = new Map(); // プローブの seq → 送信時刻
 const latencies = [];
 
@@ -43,6 +44,8 @@ function makeClient(i, { probe = false } = {}) {
     const data = typeof e.data === "string" ? e.data : "";
     stats.msgs++;
     stats.bytes += data.length;
+    const type = /^\{"t":"(\w+)"/.exec(data)?.[1] ?? "?";
+    types.set(type, (types.get(type) ?? 0) + 1);
     if (data.startsWith('{"t":"welcome"') || data.startsWith('{"t":"rate"')) {
       const m = /"sendMs":(\d+)/.exec(data);
       if (m) me.sendMs = Number(m[1]);
@@ -85,6 +88,7 @@ const lag = monitorEventLoopDelay({ resolution: 10 }); // 負荷生成側が飽�
 lag.enable();
 stats.bytes = 0;
 stats.msgs = 0;
+types.clear();
 let seq = 1;
 const probeTimer = setInterval(() => {
   const s = seq++ % 900;
@@ -101,6 +105,7 @@ console.log(`clients open/closed : ${stats.open}/${stats.closed} (errors ${stats
 console.log(`received msgs/s     : ${rate(stats.msgs)} (全クライアント合計)`);
 console.log(`received KB/s       : ${rate(stats.bytes / 1024)} (全クライアント合計)`);
 console.log(`loadgen loop lag  : p95=${(lag.percentile(95) / 1e6).toFixed(1)}ms （大きい場合は計測側が飽和している）`);
+console.log(`received by type    : ${[...types].map(([t, n]) => `${t}=${Math.round(n / SECONDS)}/s`).join(" ")}`);
 console.log(
   `probe latency ms    : p50=${pct(latencies, 0.5).toFixed(1)} p95=${pct(latencies, 0.95).toFixed(1)} max=${Math.max(...latencies, 0).toFixed(1)} (n=${latencies.length})`,
 );

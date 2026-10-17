@@ -2,15 +2,19 @@ import { describe, expect, it } from "vitest";
 import { LIMITS, roomName, sendMsFor } from "../src/config";
 
 describe("sendMsFor（人数に応じた位置の送信間隔）", () => {
-  it("少人数のときは最短間隔", () => {
-    expect(sendMsFor(0)).toBe(LIMITS.sendMsMin);
-    expect(sendMsFor(1)).toBe(LIMITS.sendMsMin);
+  it("1 人以下のときは最長間隔（誰にも見えないので、課金される受信メッセージを減らす）", () => {
+    expect(sendMsFor(0)).toBe(LIMITS.sendMsMax);
+    expect(sendMsFor(1)).toBe(LIMITS.sendMsMax);
+  });
+
+  it("2 人以上の少人数のときは最短間隔", () => {
+    expect(sendMsFor(2)).toBe(LIMITS.sendMsMin);
     expect(sendMsFor(50)).toBe(LIMITS.sendMsMin);
   });
 
-  it("人数が増えるほど間隔が広がる（単調増加）", () => {
+  it("2 人目からは、人数が増えるほど間隔が広がる（単調増加）", () => {
     let prev = 0;
-    for (let n = 1; n <= 400; n++) {
+    for (let n = 2; n <= 400; n++) {
       const ms = sendMsFor(n);
       expect(ms).toBeGreaterThanOrEqual(prev);
       prev = ms;
@@ -25,7 +29,7 @@ describe("sendMsFor（人数に応じた位置の送信間隔）", () => {
   });
 
   it("50ms 刻みで、上限を超えない", () => {
-    for (const n of [10, 77, 123, 299, 10_000]) {
+    for (const n of [1, 10, 77, 123, 299, 10_000]) {
       const ms = sendMsFor(n);
       expect(ms % 50).toBe(0);
       expect(ms).toBeLessThanOrEqual(LIMITS.sendMsMax);
