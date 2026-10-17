@@ -10,7 +10,7 @@ export interface StarData {
   x: number;
   y: number;
   c: number;
-  by: string;
+  by: string; // 持ち主 ID（uid の SHA-256。uid そのものではない）
   ts: number;
 }
 
@@ -37,20 +37,28 @@ export type View = [x0: number, y0: number, x1: number, y1: number];
 export type PresenceTuple = [id: string, x: number, y: number, c: number];
 
 // クライアント → サーバー
+//
+// 持ち主の鍵 uid は秘密。接続の最初に `hello` で 1 回だけ送り、サーバーは SHA-256 で
+// 持ち主 ID（StarData.by / LinkData.by）に変えて保存・配信する。uid そのものは保存も配信もしない。
+// hello の前に送られた他のメッセージは無視される。
 export type ClientMessage =
+  | { t: "hello"; uid: string }
   | { t: "p"; x: number; y: number; c: number; v?: View }
-  | { t: "pulse"; x: number; y: number; c?: number }
-  | { t: "star"; id: string; x: number; y: number; uid?: string }
-  | { t: "unstar"; id: string; uid?: string }
+  | { t: "pulse"; x: number; y: number }
+  | { t: "star"; id: string; x: number; y: number; c: number }
+  | { t: "unstar"; id: string }
   | { t: "admire"; id: string }
-  | { t: "link"; id: string; a: string; b: string; uid?: string }
-  | { t: "unlink"; id: string; uid?: string };
+  | { t: "link"; id: string; a: string; b: string }
+  | { t: "unlink"; id: string };
 
 // サーバー → クライアント
 export type ServerMessage =
-  | { t: "welcome"; id: string; sendMs: number; dots: PeerDot[]; stars: StarData[]; links: LinkData[] }
+  // hello への返事。me は自分の持ち主 ID（星の by と比べて「自分の星か」を判定する）
+  | { t: "welcome"; id: string; me: string; sendMs: number; dots: PeerDot[]; stars: StarData[]; links: LinkData[] }
   // 空の人数が変わったときの、位置を送る間隔の指示（人が増えるほど間隔を広げる）
   | { t: "rate"; sendMs: number }
+  // 上限超過・レート制限などで断った操作。クライアントは自分の画面の星 / 線を取り消す
+  | { t: "reject"; kind: "star" | "link"; id: string }
   | { t: "ps"; d: PresenceTuple[] }
   | { t: "pulse"; x: number; y: number; c: number }
   | ({ t: "star" } & StarData)
