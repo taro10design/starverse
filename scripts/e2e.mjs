@@ -208,12 +208,14 @@ try {
   );
 
   // --- 統計（token が無ければ見えない） ---
-  const hidden = await fetch(base + "/stats");
+  // /stats は Worker の口。Pages（静的配信）は知らないパスにも index.html を返すので、接続先の Worker に聞く
+  const workerBase = wsUrl.replace(/^ws/, "http").replace(/\/ws$/, "");
+  const hidden = await fetch(workerBase + "/stats");
   check("/stats は token 無しでは 404", hidden.status === 404, `status ${hidden.status}`);
-  const wrong = await fetch(base + "/stats", { headers: { "x-stats-token": "wrong-token" } });
+  const wrong = await fetch(workerBase + "/stats", { headers: { "x-stats-token": "wrong-token" } });
   check("/stats は違う token では 404", wrong.status === 404, `status ${wrong.status}`);
   if (STATS_TOKEN) {
-    const statsRes = await fetch(base + "/stats", { headers: { "x-stats-token": STATS_TOKEN } });
+    const statsRes = await fetch(workerBase + "/stats", { headers: { "x-stats-token": STATS_TOKEN } });
     const stats = statsRes.ok ? await statsRes.json() : null;
     check(
       "/stats は正しい token で接続数を返す",
