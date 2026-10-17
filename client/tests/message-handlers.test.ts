@@ -9,6 +9,7 @@ vi.stubGlobal("location", { search: "", hostname: "localhost", host: "localhost"
 vi.stubGlobal("localStorage", {
   getItem: (k: string) => store.get(k) ?? null,
   setItem: (k: string, v: string) => void store.set(k, v),
+  removeItem: (k: string) => void store.delete(k),
 });
 vi.stubGlobal("performance", { now: () => 1234 });
 
@@ -334,13 +335,13 @@ describe("Universe", () => {
     }
   });
 
-  it("鍵は uchu-key に保存して次回も使う。旧プロトコルで配信された uchu-uid は読まない", () => {
+  it("鍵は uchu-key に保存して次回も使う。旧プロトコルで配信された uchu-uid は読まずに消す", () => {
     store.clear();
     store.set("uchu-uid", "leaked-old-uid-123");
     const u1 = new Universe(false, () => undefined);
     expect(u1.uid).not.toBe("leaked-old-uid-123");
     expect(store.get("uchu-key")).toBe(u1.uid);
-    expect(store.get("uchu-uid")).toBe("leaked-old-uid-123"); // 古いキーは消さない（無視するだけ）
+    expect(store.has("uchu-uid")).toBe(false); // 公開済みの値を端末に残さない
     const u2 = new Universe(false, () => undefined);
     expect(u2.uid).toBe(u1.uid);
   });

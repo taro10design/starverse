@@ -19,6 +19,14 @@ function set(key: string, value: string): void {
   }
 }
 
+function remove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // 使えない環境。消せないだけで、動作には影響しない
+  }
+}
+
 // 形は保証しない（unknown を返す）。使う側で validate.ts の関数を使って確かめる
 function getJSON(key: string): unknown {
   const raw = get(key);
@@ -33,6 +41,7 @@ function getJSON(key: string): unknown {
 export const storage = {
   get,
   set,
+  remove,
   getJSON,
   setJSON: (key: string, value: unknown) => set(key, JSON.stringify(value)),
 };

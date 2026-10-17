@@ -8,6 +8,7 @@ import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER, UID_PATTERN } from "../../share
 const PEER_STALE_MS = 30_000; // これだけ位置が届かなかった人は、いなくなったものとして消す
 const REVIVED_TTL_MS = 30_000; // 復活で消した幽霊を、サーバーに断られたときのために覚えておく時間
 const KEY_STORAGE = "uchu-key"; // 持ち主の鍵の保存先
+const LEGACY_KEY_STORAGE = "uchu-uid"; // 旧プロトコルで公開された鍵の保存先。読まずに消す
 
 // ---------------------------------------------------------------------------
 // Universe — 星・線・幽霊・他人・波紋の状態と生態系ルール
@@ -74,13 +75,14 @@ export class Universe {
 
   // このブラウザ固有の持ち主の鍵。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）。
   // 鍵はアドレスバーに残すと画面共有や履歴から漏れるので、保存したら URL から消す。
-  // 旧プロトコルでは鍵（uchu-uid）が星の by として全員に配信されていたので、それは読まずに作り直す
+  // 旧プロトコルでは鍵（uchu-uid）が星の by として全員に配信されていたので、それは読まずに消して作り直す
   static loadUid(): string {
     const params = new URLSearchParams(location.search);
     const fromUrl = params.get("key");
     let uid = fromUrl ?? storage.get(KEY_STORAGE);
     if (!uid || !UID_PATTERN.test(uid)) uid = crypto.randomUUID();
     storage.set(KEY_STORAGE, uid);
+    storage.remove(LEGACY_KEY_STORAGE);
     if (fromUrl !== null) {
       // URLSearchParams.toString() は `?solo` を `?solo=` に変えるので、key の部分だけを文字列から除く
       const rest = location.search

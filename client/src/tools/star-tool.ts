@@ -22,7 +22,7 @@ export class StarTool implements Tool {
   constructor(private ctx: ToolContext) {}
 
   down(p: PointerInfo) {
-    this.finish(); // 前の操作が残っていれば確定する
+    this.finish(); // なぞりの途中の分は確定し、まだ確定していない押下は捨てる
     if (!this.ctx.canEdit()) return;
     this.pending = p;
     this.holdTimer = setTimeout(() => this.commitDown(), HOLD_MS);
