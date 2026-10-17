@@ -47,10 +47,12 @@ export const serverHandlers: { [K in ServerMessageType]: Handler<K> } = {
     u.pairsDirty = true;
   },
 
+  // 自分の星は幽霊になる。ただし寿命切れの星はならない（welcome の replaceSky と同じ判定）
   unstar(m, u) {
     const s = u.stars.get(m.id);
-    if (s && u.isMine(s)) {
-      u.ghosts.set(m.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: Date.now() }); // 自分の星は幽霊になる
+    const now = Date.now();
+    if (s && u.isMine(s) && !u.isExpired(s, now)) {
+      u.ghosts.set(m.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: now });
       u.saveGhosts();
     }
     u.stars.delete(m.id);

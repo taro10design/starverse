@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { PALETTE_COUNT } from "../../shared/limits";
+import { COORD_MAX, ID_MAX_LENGTH, PALETTE_COUNT } from "../../shared/limits";
 import { clampColor, isGhost, isLinkData, isStarData, validItems } from "../src/validate";
 
 // constants.ts が読み込み時に location を使う
@@ -42,6 +42,21 @@ describe("保存データの形の検証", () => {
     expect(isLinkData({ id: "l", a: "x", b: 2, by: "u", ts: 1 })).toBe(false);
     expect(isGhost({ id: "g", x: 0, y: 0, c: 0, gone: 1 })).toBe(true);
     expect(isGhost({ id: "g", x: 0, y: 0, c: 0 })).toBe(false);
+  });
+
+  it("範囲は通信仕様にそろえる: id は 1〜ID_MAX_LENGTH 文字、座標の絶対値は COORD_MAX 以下、色は PALETTE_COUNT 未満", () => {
+    const longId = "x".repeat(ID_MAX_LENGTH + 1);
+    const okId = "x".repeat(ID_MAX_LENGTH);
+    expect(isStarData({ id: okId, x: COORD_MAX, y: -COORD_MAX, c: PALETTE_COUNT - 1, by: "u", ts: 3 })).toBe(true);
+    expect(isStarData({ id: longId, x: 0, y: 0, c: 0, by: "u", ts: 3 })).toBe(false);
+    expect(isStarData({ id: "", x: 0, y: 0, c: 0, by: "u", ts: 3 })).toBe(false);
+    expect(isStarData({ id: "s", x: COORD_MAX + 1, y: 0, c: 0, by: "u", ts: 3 })).toBe(false);
+    expect(isStarData({ id: "s", x: 0, y: 0, c: PALETTE_COUNT, by: "u", ts: 3 })).toBe(false);
+    expect(isGhost({ id: longId, x: 0, y: 0, c: 0, gone: 1 })).toBe(false);
+    expect(isGhost({ id: "g", x: 0, y: -COORD_MAX - 1, c: 0, gone: 1 })).toBe(false);
+    expect(isGhost({ id: "g", x: 0, y: 0, c: PALETTE_COUNT, gone: 1 })).toBe(false);
+    expect(isLinkData({ id: "l", a: longId, b: "y", by: "u", ts: 1 })).toBe(false);
+    expect(isLinkData({ id: "l", a: "x", b: "", by: "u", ts: 1 })).toBe(false);
   });
 
   it("validItems: 配列でなければ空、形が不正な要素は捨てる", () => {

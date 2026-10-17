@@ -203,54 +203,18 @@ describe("star ツール", () => {
     expect(pushOp).not.toHaveBeenCalled();
   });
 
-  it("押した直後は置かず（ピンチになるかもしれない）、120ms 押し続けたら置く", () => {
-    vi.useFakeTimers();
-    try {
-      const { tools, universe, at } = setup();
-      const p = at(300, 300);
-      tools.star.down(p);
-      vi.advanceTimersByTime(119);
-      expect(universe.stars.size).toBe(0);
-      vi.advanceTimersByTime(1);
-      expect([...universe.stars.values()]).toMatchObject([{ x: p.wx, y: p.wy }]);
-      tools.star.up(p, true); // 離しても二重には置かない
-      expect(universe.stars.size).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("置く前に cancel（2 本目の指でピンチ）されたら、自分の星の上でも空でも何もしない", () => {
-    vi.useFakeTimers();
-    try {
-      const { tools, universe, sent, pushOp, at, mine } = setup();
-      const s = mine(400, 400);
-      sent.length = 0;
-      tools.star.down(at(300, 300));
-      tools.star.cancel();
-      tools.star.down(at(400, 400));
-      tools.star.cancel();
-      vi.advanceTimersByTime(1000);
-      tools.star.up(at(300, 300), true);
-      expect([...universe.stars.keys()]).toEqual([s.id]);
-      expect(sent).toEqual([]);
-      expect(pushOp).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("押してから 10px より動いたら、押した所に置いてからなぞりを続ける", () => {
-    const { tools, universe, at } = setup();
-    const p0 = at(100, 100);
-    tools.star.down(p0);
-    tools.star.move(at(105, 100), true);
-    expect(universe.stars.size).toBe(0);
-    tools.star.move(at(112, 100), true);
-    const xs = [...universe.stars.values()].map((s) => s.x);
-    expect(xs[0]).toBe(p0.wx);
-    expect(universe.stars.size).toBe(2);
-    tools.star.up(at(112, 100), false);
+  it("当たり判定と置く位置は、押した時点のワールド座標（p.wx / p.wy）。渡されるまでにカメラが動いてもずれない", () => {
+    const { tools, universe, camera, at, mine } = setup();
+    const s = mine(400, 400);
+    const onMine = at(400, 400);
+    const onSky = at(100, 100);
+    camera.pan(300, 0); // 押してから Input が確定するまでの間に、カメラが動いた
+    tools.star.down(onMine);
+    tools.star.up(onMine, true);
+    expect(universe.stars.has(s.id)).toBe(false);
+    tools.star.down(onSky);
+    tools.star.up(onSky, true);
+    expect([...universe.stars.values()]).toMatchObject([{ x: onSky.wx, y: onSky.wy }]);
   });
 
   it("cancel で途中のバッチを確定し、その後のなぞりでは置かない", () => {

@@ -47,8 +47,10 @@ describe("World: 星", () => {
 
   it("全体の上限を超えると置けない", () => {
     const w = new World();
-    for (let i = 0; i < LIMITS.maxStars; i++) w.placeStar(`u${i}`, `s${i}`, i, 0, 0, T0);
-    expect(w.placeStar("late", "x", 0, 0, 0, T0)).toBeNull();
+    // 作成の速度の上限に掛からないよう、1 秒に 1 個ずつ置く
+    for (let i = 0; i < LIMITS.maxStars; i++)
+      expect(w.placeStar(`u${i}`, `s${i}`, i, 0, 0, T0 + i * 1000)).not.toBeNull();
+    expect(w.placeStar("late", "x", 0, 0, 0, T0 + LIMITS.maxStars * 1000)).toBeNull();
   });
 
   it("消すと持ち主の枠が空く", () => {
@@ -106,6 +108,80 @@ describe("World: 星", () => {
     const later = T0 + 10 * 60_000;
     expect(w.placeStar("alice", "s1", 0, 0, 0, later)?.ts).toBe(later);
     expect(w.drainChanges().put["s:s1"]).toMatchObject({ born: later, ts: later });
+  });
+});
+
+describe("World: 新しい星・線の作成速度（部屋全体）", () => {
+  // 持ち主ごとの上限に掛からないよう、毎回別の持ち主で置く
+  const fill = (w: World, n: number, at: number, prefix = "s") => {
+    for (let i = 0; i < n; i++) expect(w.placeStar(`${prefix}o${i}`, `${prefix}${i}`, i, 0, 0, at)).not.toBeNull();
+  };
+
+  it("直近 1 分に maxNewStarsPerMinute 個を作ったら、次の新しい星は断る", () => {
+    const w = new World();
+    fill(w, LIMITS.maxNewStarsPerMinute, T0);
+    expect(w.placeStar("late", "late", 0, 1, 0, T0 + 1000)).toBeNull();
+    expect(w.stars.size).toBe(LIMITS.maxNewStarsPerMinute);
+  });
+
+  it("1 分たてば、また作れる", () => {
+    const w = new World();
+    fill(w, LIMITS.maxNewStarsPerMinute, T0);
+    expect(w.placeStar("late", "late", 0, 1, 0, T0 + 60_000)).not.toBeNull();
+  });
+
+  it("自分の星の置き直し（位置・色の変更）は数えず、上限のあとでも通る", () => {
+    const w = new World();
+    fill(w, LIMITS.maxNewStarsPerMinute, T0);
+    expect(w.placeStar("so0", "s0", 9, 9, 1, T0 + 1000)).toMatchObject({ id: "s0", x: 9, y: 9 });
+  });
+
+  it("断られた作成は数えない（上限ちょうどまで作れる）", () => {
+    const w = new World();
+    w.placeStar("alice", "a", 0, 0, 0, T0);
+    w.placeStar("mallory", "a", 1, 1, 0, T0); // 他人の星の上書きは断られる
+    fill(w, LIMITS.maxNewStarsPerMinute - 1, T0, "b");
+    expect(w.stars.size).toBe(LIMITS.maxNewStarsPerMinute);
+  });
+
+  it("線も直近 1 分に maxNewLinksPerMinute 本まで", () => {
+    const w = new World();
+    // 星を作る速度の上限に掛からないよう、時刻をずらして端の星を用意する
+    const n = LIMITS.maxNewLinksPerMinute + 1;
+    for (let i = 0; i <= n; i++) w.placeStar(`o${i}`, `h${i}`, i, 0, 0, T0 + i * 1000);
+    const at = T0 + (n + 1) * 1000;
+    for (let i = 0; i < LIMITS.maxNewLinksPerMinute; i++)
+      expect(w.addLink(`o${i}`, `l${i}`, `h${i}`, `h${i + 1}`, at)).not.toBeNull();
+    expect(w.addLink("late", "late", "h0", `h${n}`, at)).toBeNull();
+    expect(w.addLink("late", "late", "h0", `h${n}`, at + 60_000)).not.toBeNull();
+  });
+});
+
+describe("World: 次に寿命が切れる時刻（alarm 用）", () => {
+  it("星も線も無ければ null", () => {
+    expect(new World().nextExpiryAt()).toBeNull();
+  });
+
+  it("孤立した星は ts + STAR_TTL の直後（prune で消える最初の時刻）", () => {
+    const w = new World();
+    w.placeStar("alice", "s1", 0, 0, 0, T0);
+    w.placeStar("bob", "s2", 3, 3, 0, T0 + 5000);
+    expect(w.nextExpiryAt()).toBe(T0 + STAR_TTL + 1);
+    expect(w.prune(T0 + STAR_TTL + 1, true).stars).toEqual(["s1"]);
+  });
+
+  it("密集した星は寿命が短いので、その時刻になる", () => {
+    const w = new World();
+    for (let i = 0; i < 10; i++) w.placeStar(`u${i}`, `s${i}`, 0.5 + i * 0.001, 0.5, 0, T0);
+    expect(w.nextExpiryAt()).toBe(T0 + 60_000 + 1);
+  });
+
+  it("線の寿命も見る（端の星より先に切れる線）", () => {
+    const w = new World();
+    w.placeStar("alice", "a", 0, 0, 0, T0 + 10_000);
+    w.placeStar("alice", "b", 1, 1, 0, T0 + 10_000);
+    w.addLink("alice", "l1", "a", "b", T0);
+    expect(w.nextExpiryAt()).toBe(T0 + STAR_TTL + 1);
   });
 });
 

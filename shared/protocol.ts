@@ -40,7 +40,8 @@ export type View = v.InferOutput<typeof ViewSchema>;
 // 通算 20 回目で 1008 で切断される。形式に合わない uid の hello は即 1008（切り詰めない）。
 // hello の処理中（ハッシュ計算の間）に届いたものは、welcome のあとに処理される。
 //
-// 形に合わないメッセージは無視する。ただし p の色が不正なら 0、視界が不正なら視界なしとして受ける。
+// hello 済みでも、読めない JSON・知らない t は違反として通算で数える（20 回目で 1008）。t は知っているが形が合わない
+// メッセージは無視する。ただし p の色が不正なら 0、視界が不正なら視界なしとして受ける。
 // 知らないキーは捨てる。
 export const ClientMessageSchema = v.variant("t", [
   v.object({ t: v.literal("hello"), uid: v.pipe(v.string(), v.regex(UID_PATTERN)) }),

@@ -30,6 +30,19 @@ function skip(name, why) {
 const SERVER_ONLY = ["born", "v"];
 const hasServerOnly = (o) => SERVER_ONLY.some((k) => Object.hasOwn(o, k));
 
+// 開いたすべての接続。uid の漏れは、全員の全受信フレームの生の文字列で確かめる
+const clients = [];
+// 受け取ったどのフレームの生の文字列にも、どの接続の uid も含まれていないか。含まれていれば、その説明を返す
+function uidLeaks() {
+  const uids = clients.map((c) => c.uid).filter((u) => /^[\w-]{8,64}$/.test(u)); // 形式に合う uid だけが使われる
+  const found = [];
+  for (const c of clients)
+    for (const raw of c.raw)
+      for (const u of uids)
+        if (typeof raw === "string" && raw.includes(u)) found.push(`${c.label} が ${u.slice(0, 8)}… を受信`);
+  return found;
+}
+
 const newUid = () => crypto.randomUUID();
 const newId = () => "e2e-" + crypto.randomUUID().slice(0, 8);
 
@@ -38,6 +51,7 @@ const newId = () => "e2e-" + crypto.randomUUID().slice(0, 8);
 function client(label, { uid = newUid(), hello = true } = {}) {
   const ws = new WebSocket(wsUrl);
   const c = { label, uid, ws, got: [], raw: [], closed: false, closeCode: null };
+  clients.push(c);
   ws.onmessage = (e) => {
     c.raw.push(e.data);
     if (typeof e.data === "string" && e.data.startsWith("{")) c.got.push(JSON.parse(e.data));
@@ -115,10 +129,6 @@ try {
     !!welcomeA && HEX32.test(welcomeA.me) && welcomeA.me !== A.uid && !welcomeA.me.includes(A.uid.slice(0, 8)),
     welcomeA?.me,
   );
-  check(
-    "welcome の星・線の持ち主に自分の uid が出てこない",
-    !!welcomeA && !welcomeA.stars.some((s) => s.by === A.uid) && !welcomeA.links.some((l) => l.by === A.uid),
-  );
   // 空に 1 人だけのときは最長の 1000ms になる（A が B より先に welcome を受け取った場合）
   check(
     "送信間隔の指示が妥当（100〜1000ms）",
@@ -141,14 +151,27 @@ try {
   check("別の uid は別の持ち主になる", !!welcomeB && welcomeB.me !== welcomeA?.me);
 
   // 遠い視界の相手には届かない（視界ベースの配信）
+  // FAR は、いる場所は A の近くで、見ている範囲だけが遠い。A が FAR の位置を受け取れば、同じメッセージの視界も届いている
   const FAR = client("FAR");
   await FAR.opened;
-  await FAR.welcome();
-  FAR.send({ t: "p", x: 500, y: 500, c: 0, v: [499, 499, 501, 501] });
-  await sleep(300);
+  const welcomeFar = await FAR.welcome();
+  FAR.send({ t: "p", x: 0.48, y: 0.5, c: 0, v: [499, 499, 501, 501] });
+  const farSeen = await A.waitFor((m) => m.t === "ps" && m.d.some((p) => p[0] === welcomeFar?.id));
   A.send({ t: "pulse", x: 0.5, y: 0.5 });
-  await sleep(600);
-  check("視界の遠い相手には、近くの波紋が届かない", !FAR.got.some((m) => m.t === "pulse"));
+  // 近くの B に届いた時点で、サーバーは波紋を配り終えている
+  const nearPulse = await B.waitFor((m) => m.t === "pulse");
+  // そのあとに FAR へ必ず届くもの（短い接続の leave。leave は視界に関係なく全員に届く）が届くのを待ってから判定する。
+  // 1 つの接続への配信は送った順に届くので、leave が届いた時点で、波紋が FAR に送られていればもう届いている
+  const PROBE = client("PROBE");
+  await PROBE.opened;
+  const welcomeProbe = await PROBE.welcome();
+  PROBE.ws.close();
+  const probeLeft = await FAR.waitFor((m) => m.t === "leave" && m.id === welcomeProbe?.id);
+  check(
+    "視界の遠い相手には、近くの波紋が届かない（近くの相手には届く）",
+    !!farSeen && !!nearPulse && !!probeLeft && !FAR.got.some((m) => m.t === "pulse"),
+    `視界の反映 ${!!farSeen}, 近くへの波紋 ${!!nearPulse}, 確かめの leave ${!!probeLeft}`,
+  );
   FAR.ws.close();
   await FAR.waitClosed();
 
@@ -169,8 +192,10 @@ try {
   B.send({ t: "star", id: "x", x: 1e9, y: 0, c: 0 });
   B.send({ t: "evil" });
   B.send(JSON.stringify({ t: "p", x: 0.5, y: 0.5, c: 1 }) + " ".repeat(2000)); // 大きすぎるメッセージ
-  await sleep(300);
-  check("不正な入力のあとも接続が保たれる", !B.closed && B.ws.readyState === 1);
+  // そのあとに送った正しい位置が A に届けば、それより前の不正な入力は処理済み（切られていれば届かない）
+  B.send({ t: "p", x: 0.53, y: 0.5, c: 2 });
+  const afterBad = await A.waitFor((m) => m.t === "ps" && m.d.some((p) => p[0] === welcomeB?.id && p[1] === 0.53));
+  check("不正な入力のあとも接続が保たれる", !!afterBad && !B.closed && B.ws.readyState === 1);
 
   // --- 形式に合わない uid の hello は切断される ---
   const BAD = client("BAD", { uid: "short" });
@@ -216,10 +241,17 @@ try {
     await sleep(200);
     EARLY.hello();
     const welcomeEarly = await EARLY.welcome();
-    await sleep(300);
+    // hello のあとに置いた星が A に届くのを待ってから判定する（同じ接続のメッセージは順に処理され、A への配信も順に届く）
+    const earlyProbe = newId();
+    EARLY.send({ t: "star", id: earlyProbe, x: 0.31, y: 0.3, c: 0 });
+    const probeStar = await A.waitFor((m) => m.t === "star" && m.id === earlyProbe);
+    EARLY.send({ t: "unstar", id: earlyProbe }); // 確かめ用の星は消しておく
     check(
       "hello の前に送った星は無視される",
-      !!welcomeEarly && !welcomeEarly.stars.some((s) => s.id === earlyId) && !A.got.some((m) => m.id === earlyId),
+      !!welcomeEarly &&
+        !!probeStar &&
+        !welcomeEarly.stars.some((s) => s.id === earlyId) &&
+        !A.got.some((m) => m.id === earlyId),
     );
     check("hello の前には何も届かない（welcome が最初）", EARLY.got[0]?.t === "welcome", EARLY.got[0]?.t);
     EARLY.ws.close();
@@ -273,7 +305,9 @@ try {
 
     // --- 線は持ち主だけが消せる ---
     A.send({ t: "unlink", id: ids.l1 });
-    await sleep(300);
+    // そのあとに A が送った上書き（必ず断られる）の reject が返れば、unlink は処理済み
+    A.send({ t: "star", id: ids.s1, x: 9, y: 9, c: 1 });
+    await A.waitFor((m) => m.t === "reject" && m.kind === "star" && m.id === ids.s1 && m !== rejected);
 
     // --- 再接続して welcome に反映されている ---
     const w1 = await snapshot("C");
@@ -281,7 +315,6 @@ try {
     check("再接続した人の welcome に星と線が入っている", !!s1 && w1.links.some((l) => l.id === ids.l1));
     check("他人は星を上書き・移動できない", !!s1 && s1.by === welcomeB?.me && s1.x === 0.1 && s1.c === 3);
     check("持ち主以外は線を消せない", !!w1?.links.some((l) => l.id === ids.l1));
-    check("welcome の星の持ち主に uid が出てこない", !!w1 && !w1.stars.some((s) => s.by === B.uid || s.by === A.uid));
     check(
       "welcome の星・線にサーバー専用の born / v が含まれない",
       !!w1 && w1.stars.length > 0 && !w1.stars.some(hasServerOnly) && !w1.links.some(hasServerOnly),
@@ -294,6 +327,14 @@ try {
     check("同じ uid でつなぎ直すと同じ持ち主になる", !!welcomeB2 && welcomeB2.me === welcomeB?.me);
     B2.ws.close();
 
+    // 星と線を置いて配信が一巡したあとで、全員が受け取った全フレームの生の文字列に、どの uid も出てこない
+    const leaksAfterStars = uidLeaks();
+    check(
+      "星・線を置いたあと、受信したどのフレームにも uid が含まれない",
+      leaksAfterStars.length === 0,
+      leaksAfterStars.slice(0, 3).join(" / "),
+    );
+
     // --- 1 つの接続が置ける星の上限 ---
     const H = client("H");
     await H.opened;
@@ -304,8 +345,9 @@ try {
       created.push(id);
       H.send({ t: "star", id, x: 10 + i * 0.3, y: 10, c: i % 8 }); // 2×70 = 140 は一度に使える量(200)に収まる
     }
-    await sleep(800);
-    const rejects = H.got.filter((m) => m.t === "reject" && m.kind === "star").length;
+    const starRejects = () => H.got.filter((m) => m.t === "reject" && m.kind === "star").length;
+    for (const t0 = Date.now(); starRejects() < 6 && Date.now() - t0 < 3000;) await sleep(20);
+    const rejects = starRejects();
     check("上限(64)を超える星を置くと reject が返る", rejects >= 6, `${rejects} 件`);
     const w3 = await snapshot("C3");
     const heavy = w3.stars.filter((s) => created.includes(s.id)).length;
@@ -317,7 +359,10 @@ try {
       B.send({ t: "unstar", id: cleanup[i] });
       if (i % 20 === 19) await sleep(600); // レート制限に当たらない程度に
     }
-    await sleep(800);
+    // 残っていた星の unstar がすべて A に届くまで待つ（届いた時点で B の消去は処理済み）
+    const existed = cleanup.filter((id) => w3.stars.some((s) => s.id === id));
+    const allGone = () => existed.every((id) => A.got.some((m) => m.t === "unstar" && m.id === id));
+    for (const t0 = Date.now(); !allGone() && Date.now() - t0 < 5000;) await sleep(20);
     const w4 = await snapshot("C4");
     const mineLeft = w4.stars.filter((s) => cleanup.includes(s.id)).length;
     check(
@@ -342,6 +387,12 @@ try {
   B.ws.close();
   const left = await A.waitFor((m) => m.t === "leave" && m.id === leavingId);
   check("誰かが抜けると leave が届く", !!left);
+  const leaks = uidLeaks();
+  check(
+    "受信したどのフレームにも uid が含まれない（全接続・全フレーム）",
+    leaks.length === 0,
+    leaks.slice(0, 3).join(" / "),
+  );
 
   A.ws.close();
 } catch (err) {

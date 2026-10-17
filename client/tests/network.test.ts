@@ -114,6 +114,17 @@ const STAR = { t: "star", id: "s1", x: 0.1, y: 0.1, c: 0 } as const;
 // PartySocket は接続を非同期に作る（待ち時間 0 でもタイマーと Promise を経る）。時間を進めて、その間の非同期も流す
 const wait = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 const alive = () => FakeWebSocket.all.filter((w) => !w.closed);
+// 条件がそろうまで、偽の時間を 1ms ずつ進める（そろっていれば進めない）。maxMs 進めてもそろわなければ失敗。
+// PartySocket が内部でどう予約するか（待ち 0 のタイマーが偽のタイマーでは何 ms になるか など）に依存しないため
+async function until(cond: () => boolean, what: string, maxMs = 50) {
+  for (let t = 0; ; t++) {
+    await wait(0); // まず時間を進めずに、今の時刻の予約と Promise を流す
+    if (cond()) return;
+    if (t >= maxMs) throw new Error(`${what} が ${maxMs}ms（偽の時間）以内にそろわなかった`);
+    await wait(1);
+  }
+}
+const sockets = (n: number) => () => FakeWebSocket.all.length === n;
 
 // Network を App の最小の偽物（universe / player / camera）で動かす
 async function setup() {
@@ -123,7 +134,7 @@ async function setup() {
   const universe = new mod.Universe(false, (m) => net.send(m));
   const net = new mod.Network({ universe, player, camera }, FakeWebSocket as unknown as typeof WebSocket);
   net.connect();
-  await wait(0);
+  await until(sockets(1), "最初の接続");
   const last = () => {
     const ws = FakeWebSocket.all.at(-1);
     if (!ws) throw new Error("接続が無い");
@@ -256,9 +267,7 @@ describe("Network", () => {
     joined().drop(1008);
     await wait(29_999);
     expect(FakeWebSocket.all).toHaveLength(1);
-    await wait(1);
-    await wait(1); // reconnect() のあとの接続は、待ち 0 のタイマーを経て作られる（タイマーの中から予約した 0ms は、偽のタイマーでは 1ms）
-    expect(FakeWebSocket.all).toHaveLength(2);
+    await until(sockets(2), "30 秒後の再接続");
     joined();
     await wait(60_000);
     expect(FakeWebSocket.all).toHaveLength(2);
@@ -286,7 +295,7 @@ describe("Network", () => {
     expect(alive()).toHaveLength(1);
   });
 
-  it("つながっても 10 秒以内に welcome が来なければ、つなぎ直す", async () => {
+  it("つながっても 10 秒以内に welcome が来なければ閉じ、1.5 秒待ってからつなぎ直す（待ちなしで繰り返さない）", async () => {
     const { last } = await setup();
     const ws1 = last();
     ws1.open();
@@ -294,8 +303,10 @@ describe("Network", () => {
     expect(ws1.closed).toBe(false);
     await wait(1);
     expect(ws1.closed).toBe(true);
+    await wait(1_499);
+    expect(FakeWebSocket.all).toHaveLength(1);
     await wait(1);
-    expect(FakeWebSocket.all).toHaveLength(2);
+    await until(sockets(2), "welcome 待ちのタイムアウト後の再接続");
     expect(alive()).toHaveLength(1);
   });
 
@@ -326,8 +337,7 @@ describe("Network", () => {
     expect(ws1.closed).toBe(false);
     await wait(5_000);
     expect(ws1.closed).toBe(true);
-    await wait(1);
-    expect(FakeWebSocket.all).toHaveLength(2);
+    await until(sockets(2), "ping の失敗後の再接続");
     joined();
     ws1.drop(); // half-open だった古い接続の閉じる通知が遅れて届いても
     await wait(60_000);
@@ -344,8 +354,7 @@ describe("Network", () => {
     expect(FakeWebSocket.all).toHaveLength(1);
     doc.setHidden(false);
     doc.setHidden(false); // 表示の通知が重なっても増えない
-    await wait(0);
-    expect(FakeWebSocket.all).toHaveLength(2);
+    await until(sockets(2), "表示に戻ったあとの接続");
     await wait(5_000);
     expect(alive()).toHaveLength(1);
   });
@@ -422,12 +431,13 @@ describe("Network", () => {
       ...mod.socketOptions(),
       WebSocket: FakeWebSocket,
     });
-    await wait(0);
+    await until(sockets(1), "内側の接続");
     expect(ws.send(JSON.stringify(STAR))).toBe(false);
     expect(ws.bufferedAmount).toBe(0);
     const inner = FakeWebSocket.all.at(-1);
-    inner?.open();
-    expect(inner?.sent).toEqual([]);
+    if (!inner) throw new Error("内側の接続が無い");
+    inner.open();
+    expect(inner.sent).toEqual([]);
     ws.close();
   });
 

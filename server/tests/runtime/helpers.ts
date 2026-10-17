@@ -1,9 +1,17 @@
 // ランタイム用テストの道具。Worker の /ws に WebSocket でつなぎ、届いたメッセージを貯める小さなクライアント。
-// 実装（server/src）には依存しない。使うのは shared/protocol.ts の型と、wrangler.jsonc のバインディングだけ。
+// 実装（server/src）には依存しない。使うのは shared/protocol.ts の型、テスト専用の厳密なスキーマ
+// （../support/strict-protocol.ts）、wrangler.jsonc のバインディングだけ。
+//
+// 受信したフレームは 1 つ残らず厳密なスキーマで検証し、各テストのあと（cleanup）に次を確かめる。どちらかに
+// 当たればそのテストを失敗にする:
+// - 仕様に合わないフレーム（知らないキー・born / v / uid / origin・持ち主 ID の形でない by / me・JSON でないもの）
+// - 開いたどの接続の uid（と forbidInFrames で登録した文字列）も、どの受信フレームの生の文字列にも含まれない
 
 import { SELF, reset } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { UID_PATTERN } from "../../../shared/limits";
 import type { ClientMessage, ServerMessage } from "../../../shared/protocol";
+import { strictFrameProblem } from "../support/strict-protocol";
 
 // Worker（wrangler.jsonc の main）の既定のエクスポートに HTTP で問い合わせる。
 // SELF は 1.4.4 で非推奨（exports.default を勧める）だが、exports の型付けには main の型を
@@ -16,9 +24,6 @@ export function fetchWorker(path: string, init?: RequestInit): Promise<Response>
 export const FIRST_ROOM = "space";
 
 export const HEX32 = /^[0-9a-f]{32}$/;
-
-// サーバーが保存にだけ使う項目と、配信に出てはいけない秘密（scripts/e2e.mjs と同じ観点）
-export const SERVER_ONLY_KEYS = ["uid", "born", "origin", "v"] as const;
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -63,11 +68,16 @@ export interface TestClient {
 }
 
 const opened = new Set<TestClient>();
+// 受信の検証で見つかった問題（cleanup でまとめて失敗にする。イベントの中で投げてもテストは落ちないため）
+const problems: string[] = [];
+// uid のほかに、どの受信フレームにも出てはいけない文字列（旧形式の保存データに入れた生の uid など）
+const forbidden = new Set<string>();
 // 接続元の IP（テストごとに別の値）。接続元ごとの制限がある実装でも、ない実装でも同じに動くように
 let ipCounter = 1;
 
-function isServerMessage(v: unknown): v is ServerMessage {
-  return typeof v === "object" && v !== null && "t" in v && typeof v.t === "string";
+// この文字列が、このテストのどの受信フレームにも含まれないことを cleanup で確かめる
+export function forbidInFrames(secret: string): void {
+  forbidden.add(secret);
 }
 
 export interface ConnectOptions {
@@ -121,11 +131,18 @@ export async function connect({ uid = newUid(), hello = true }: ConnectOptions =
     },
   };
   ws.addEventListener("message", (e) => {
-    if (typeof e.data !== "string") return;
+    if (typeof e.data !== "string") {
+      problems.push(`文字列でないフレームを受信した（uid ${uid}）`);
+      return;
+    }
     c.raw.push(e.data);
-    if (!e.data.startsWith("{")) return;
-    const parsed: unknown = JSON.parse(e.data);
-    if (isServerMessage(parsed)) c.got.push(parsed);
+    const problem = strictFrameProblem(e.data);
+    if (problem !== null) {
+      problems.push(problem);
+      return;
+    }
+    // 厳密なスキーマを通った JSON だけを got に入れる（"pong" は raw にだけ残る）
+    if (e.data.startsWith("{")) c.got.push(JSON.parse(e.data) as ServerMessage);
   });
   ws.addEventListener("close", (e) => {
     c.closed = true;
@@ -154,15 +171,28 @@ export function roomStub(name = FIRST_ROOM): DurableObjectStub {
   return env.UNIVERSE.get(env.UNIVERSE.idFromName(name));
 }
 
-// 各テストのあと: 開いた接続をすべて閉じ、Durable Object（メモリとストレージ）をすべて消す。
-// 次のテストは空の空から始まる
-export async function cleanup(): Promise<void> {
-  await Promise.all([...opened].map((c) => c.close()));
-  opened.clear();
-  await reset();
+// 受信の確かめ: 仕様に合わないフレームと、秘密（各接続の uid・forbidInFrames の文字列）の漏れ
+function frameFindings(): string[] {
+  const found = [...problems];
+  // 形式に合う uid だけが持ち主 ID のもとになる（"short" や "" のような不正な uid は 1008 で切られ、どこにも使われない）
+  const secrets = [...[...opened].map((c) => c.uid).filter((u) => UID_PATTERN.test(u)), ...forbidden];
+  for (const c of opened) {
+    for (const raw of c.raw) {
+      for (const s of secrets)
+        if (raw.includes(s)) found.push(`受信フレームに秘密 ${s} が含まれる: ${raw.slice(0, 200)}`);
+    }
+  }
+  return found;
 }
 
-// 配信に出てはいけない項目を持っているか
-export function leaksServerOnly(o: object): boolean {
-  return SERVER_ONLY_KEYS.some((k) => Object.hasOwn(o, k));
+// 各テストのあと: 受信を確かめ、開いた接続をすべて閉じ、Durable Object（メモリとストレージ）をすべて消す。
+// 次のテストは空の空から始まる。受信に問題があれば、後片付けを済ませてから失敗にする
+export async function cleanup(): Promise<void> {
+  await Promise.all([...opened].map((c) => c.close()));
+  const found = frameFindings();
+  opened.clear();
+  problems.length = 0;
+  forbidden.clear();
+  await reset();
+  if (found.length > 0) throw new Error(`受信フレームの確かめに失敗:\n${found.join("\n")}`);
 }

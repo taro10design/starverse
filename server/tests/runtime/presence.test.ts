@@ -2,11 +2,22 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { ServerMessage } from "../../../shared/protocol";
-import { cleanup, join, sleep, waitFor } from "./helpers";
+import { cleanup, join, newId, waitFor } from "./helpers";
 
 afterEach(cleanup);
 
 const NEAR: [number, number, number, number] = [-10, -10, 10, 10];
+
+type Joined = Awaited<ReturnType<typeof join>>;
+
+// 「届かない」を確かめる前の区切り。sender が星を置き、それが receiver に届くまで待つ。
+// 星は視界に関係なく全員に届き（docs/specs/0003）、1 つの接続への配信は送った順に届くので、
+// これより前に receiver へ送られたものは、この時点ですべて届いている
+async function probe(sender: Joined, receiver: Joined): Promise<void> {
+  const id = newId();
+  sender.c.send({ t: "star", id, x: 0, y: 0, c: 0 });
+  await receiver.c.waitFor("star", (s) => s.id === id);
+}
 
 describe("位置（ps）と波紋（pulse）", () => {
   it("視界内の相手に ps が届く。形は [id, x, y, color] で、自分の位置は返らない", async () => {
@@ -26,15 +37,18 @@ describe("位置（ps）と波紋（pulse）", () => {
     const far = await join();
     a.c.send({ t: "p", x: 0, y: 0, c: 0, v: NEAR });
     near.c.send({ t: "p", x: 1, y: 1, c: 0, v: NEAR });
-    far.c.send({ t: "p", x: 5000, y: 5000, c: 0, v: [4990, 4990, 5010, 5010] });
-    // 3 人の視界がサーバーに届いたこと（near が a の位置を受け取る）を確かめてから波紋を出す
+    // far は、いる場所は近く（a の視界の中）で、見ている範囲だけが遠い。
+    // a が far の位置を受け取れば、同じメッセージの far の視界もサーバーに届いている
+    far.c.send({ t: "p", x: 2, y: 2, c: 0, v: [4990, 4990, 5010, 5010] });
     await near.c.waitFor("ps", (m) => m.d.some((p) => p[0] === a.w.id));
     await a.c.waitFor("ps", (m) => m.d.some((p) => p[0] === near.w.id));
+    await a.c.waitFor("ps", (m) => m.d.some((p) => p[0] === far.w.id));
     a.c.send({ t: "pulse", x: 0, y: 0 });
     const got = await near.c.waitFor("pulse");
     expect(got).toMatchObject({ x: 0, y: 0 });
-    // near に届いた時点で配信は済んでいる。far にはそのあと少し待っても届かない
-    await sleep(300);
+    // 波紋のあとに、far にも必ず届く星を置く（星は視界に関係なく全員に届く）。
+    // 同じ接続への配信は順に届くので、星が届いた時点で、波紋が far に送られていればもう届いている
+    await probe(a, far);
     expect(far.c.of("pulse")).toEqual([]);
   });
 
@@ -47,7 +61,7 @@ describe("位置（ps）と波紋（pulse）", () => {
     await near.c.waitFor("ps", (m) => m.d.some((p) => p[0] === a.w.id));
     a.c.send({ t: "pulse", x: 0, y: 0 });
     await near.c.waitFor("pulse");
-    await sleep(300);
+    await probe(a, blind);
     expect(blind.c.of("pulse")).toEqual([]);
   });
 

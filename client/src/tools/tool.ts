@@ -43,6 +43,7 @@ export interface ToolContext {
 
 export interface Tool {
   readonly name: ToolName;
+  // 押した。ピンチでない操作と確定してから（離す・少し動く・少し待つ）、押した時点の位置で呼ばれる（Input）
   down(p: PointerInfo): void;
   // 消費したら true。true なら Input は「光が追従する」既定動作をしない
   move(p: PointerInfo, pressed: boolean): boolean;

@@ -6,6 +6,13 @@ import { createTools, HitTester } from "./tools";
 import type { Tool, PointerInfo, LinkPreview } from "./tools";
 import { KeyState } from "./keys";
 
+// 押したが、まだツールに渡していない 1 本目の指
+interface PendingDown {
+  id: number;
+  p: PointerInfo; // 押した時点の位置（ツールにはこの位置を渡す）
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface PinchState {
   d0: number;
   z0: number;
@@ -21,6 +28,11 @@ interface PinchState {
 //
 // キャンバス上のポインタは全て setPointerCapture する（ウィンドウの外で離しても pointerup が届く）。
 // それでも取りこぼした指（lostpointercapture・blur）は片付けて、ツールを cancel する。
+//
+// 1 本目の指の押下は、すぐにはツールに渡さない（遅延確定）。離す・COMMIT_MOVE_PX より動く・COMMIT_HOLD_MS
+// 待つ、のどれかで「ピンチでない操作」と確定してから、押した時点の位置で tool.down と波紋・音・振動を出す。
+// その前に 2 本目の指が来たら（ピンチ）、何もしない。ツールの種類によらない（星を置く・消しゴムで消す・
+// pulse を送る、をピンチの指で起こさない）
 
 export class Input {
   private tools: Record<ToolName, Tool>;
@@ -28,6 +40,7 @@ export class Input {
 
   private pointers = new Map<number, Point>();
   private pinch: PinchState | null = null;
+  private pending: PendingDown | null = null;
   // ピンチが始まったジェスチャー。全部の指が離れるまでツールに up を渡さない
   private gestureCancelled = false;
   private mapDrag = false;
@@ -81,6 +94,7 @@ export class Input {
 
   setTool(name: ToolName) {
     if (name === this.current.name) return;
+    this.commitPending(); // 押したばかりの操作は、前のツールで確定する
     this.current.cancel(); // 途中の操作は確定してから切り替える
     this.current = this.tools[name];
   }
@@ -100,7 +114,7 @@ export class Input {
   }
 
   handlePointerDown(e: PointerEvent) {
-    const { camera, universe, player, network, ui, canvas } = this.app;
+    const { camera, canvas } = this.app;
     this.downTarget = e.target;
     if (e.target !== canvas) return;
     canvas.setPointerCapture(e.pointerId);
@@ -112,7 +126,9 @@ export class Input {
     }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (this.pointers.size >= 2) {
-      // 2 本目の指でピンチが始まった。1 本目で始めた操作は確定して止め、離したときの up も渡さない
+      // 2 本目の指でピンチが始まった。まだ確定していない 1 本目の押下は捨てる。
+      // 確定済みの操作は確定して止め、離したときの up も渡さない
+      this.clearPending();
       if (!this.gestureCancelled) this.current.cancel();
       this.gestureCancelled = true;
       if (this.pointers.size === 2) {
@@ -123,14 +139,33 @@ export class Input {
       }
       return;
     }
-    const p = this.pointerInfo(e);
     this.downX = e.clientX;
     this.downY = e.clientY;
+    this.clearPending();
+    this.pending = {
+      id: e.pointerId,
+      p: this.pointerInfo(e),
+      timer: setTimeout(() => this.commitPending(), COMMIT_HOLD_MS),
+    };
+  }
+
+  // 押下を「ピンチでない操作」として確定し、押した時点の位置でツールに渡す
+  private commitPending() {
+    const pd = this.pending;
+    if (!pd) return;
+    this.clearPending();
+    const { universe, player, network, ui } = this.app;
+    const { p } = pd;
     universe.addPulse(p.wx, p.wy, 1, player.palette.glow);
     network.send({ t: "pulse", x: p.wx, y: p.wy });
     ui.ping();
     ui.haptic();
     this.current.down(p);
+  }
+
+  private clearPending() {
+    if (this.pending) clearTimeout(this.pending.timer);
+    this.pending = null;
   }
 
   handlePointerMove(e: PointerEvent) {
@@ -159,6 +194,11 @@ export class Input {
       camera.anchor(this.pinch.wx, this.pinch.wy, m.x, m.y);
       return;
     }
+    if (this.pending?.id === e.pointerId) {
+      // 確定前の小さな動きは、ツールにも光にも渡さない。大きく動いたら確定してから続ける
+      if (Math.hypot(e.clientX - this.downX, e.clientY - this.downY) <= COMMIT_MOVE_PX) return;
+      this.commitPending();
+    }
     const p = this.pointerInfo(e);
     // ピンチのあと残った指は、ツールには渡さず光を動かすだけにする
     if (!this.gestureCancelled && this.current.move(p, pt !== undefined)) return;
@@ -182,6 +222,7 @@ export class Input {
       return;
     }
     if (!wasPressed) return; // キャンバスの外で始まった操作（ボタンなど）や、片付け済みの指
+    if (this.pending?.id === e.pointerId) this.commitPending(); // すぐ離した（タップ）
 
     // タップ＝他の指もなく・キャンバス上で押して・ほとんど動いていない
     const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
@@ -206,6 +247,7 @@ export class Input {
   // ウィンドウから離れた。押していた指・キーは離したことにする（離した通知が届かないため）
   handleBlur() {
     const had = this.pointers.size > 0 || this.panning !== null;
+    this.clearPending();
     this.pointers.clear();
     this.pinch = null;
     this.gestureCancelled = false;
@@ -222,6 +264,7 @@ export class Input {
       this.panning = null;
       this.updateCursor();
     }
+    if (this.pending?.id === id) this.clearPending();
     this.pointers.delete(id);
     if (this.pointers.size < 2) this.pinch = null;
     if (this.pointers.size === 0) this.gestureCancelled = false;
@@ -273,5 +316,8 @@ export class Input {
   }
 }
 
+// 押下の遅延確定（ピンチの 1 本目の指で操作しない）。2 本の指がそろうまでの時間差は普通 100ms 以内
+const COMMIT_HOLD_MS = 120;
+const COMMIT_MOVE_PX = 10; // これより動いたら、ピンチを待たずに確定する（なぞりの始まり）
 const KEY_PAN_PX_PER_SEC = 480; // Leaflet の矢印 1 回 80px を、押している間の連続移動にした値
 const KEY_ZOOM_PER_SEC = 1.4;

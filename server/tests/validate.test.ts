@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PALETTE_COUNT } from "../../shared/limits";
-import { INVALID_HELLO, parseClientMessage as parse } from "../src/validate";
-import * as v from "valibot";
-import { ServerMessageSchema, type ServerMessage } from "../../shared/protocol";
+import { INVALID_HELLO, UNREADABLE, parseClientMessage as parse } from "../src/validate";
+import { strictFrameProblem } from "./support/strict-protocol";
 
 const UID = "abcdef12-3456-7890-abcd-ef1234567890";
 
@@ -18,16 +17,21 @@ describe("parseClientMessage", () => {
     expect(parse('{"t":"p","x":1,"y":2,"c":3,"v":[0,0,1,1]}')).toEqual({ t: "p", x: 1, y: 2, c: 3, v: [0, 0, 1, 1] });
   });
 
-  it("JSON でないもの・オブジェクトでないものは捨てる", () => {
-    expect(parse("not json")).toBeNull();
-    expect(parse("123")).toBeNull();
-    expect(parse("null")).toBeNull();
-    expect(parse('"star"')).toBeNull();
+  it("JSON でないもの・オブジェクトでないものは、読めないもの（UNREADABLE。違反として数える）", () => {
+    expect(parse("not json")).toBe(UNREADABLE);
+    expect(parse("123")).toBe(UNREADABLE);
+    expect(parse("null")).toBe(UNREADABLE);
+    expect(parse('"star"')).toBe(UNREADABLE);
   });
 
-  it("未知の種類は捨てる", () => {
-    expect(parse('{"t":"evil"}')).toBeNull();
-    expect(parse("{}")).toBeNull();
+  it("未知の種類・種類の無いものも、読めないもの（UNREADABLE）", () => {
+    expect(parse('{"t":"evil"}')).toBe(UNREADABLE);
+    expect(parse('{"t":5}')).toBe(UNREADABLE);
+    expect(parse("{}")).toBe(UNREADABLE);
+  });
+
+  it("種類は正しいが形の合わないものは null（無視するだけ）", () => {
+    expect(parse('{"t":"star"}')).toBeNull();
   });
 
   it("座標が数値でない・範囲外なら捨てる", () => {
@@ -111,7 +115,14 @@ describe("parseClientMessage: 旧 uid フィールド", () => {
 describe("parseClientMessage: 視界", () => {
   it("v が無い p はそのまま通す（v は付けない）", () => {
     const m = parse('{"t":"p","x":0,"y":0,"c":1}');
-    expect(m).toEqual({ t: "p", x: 0, y: 0, c: 1 });
+    // toEqual は undefined のキーを区別しないので、toStrictEqual と "v" in で、キー自体が無いことを確かめる
+    expect(m).toStrictEqual({ t: "p", x: 0, y: 0, c: 1 });
+    expect(m !== null && typeof m === "object" && "v" in m).toBe(false);
+  });
+
+  it("c が無い p は、色 0 として受ける", () => {
+    expect(parse('{"t":"p","x":0,"y":0}')).toStrictEqual({ t: "p", x: 0, y: 0, c: 0 });
+    expect(parse('{"t":"p","x":0,"y":0,"v":[0,0,1,1]}')).toStrictEqual({ t: "p", x: 0, y: 0, c: 0, v: [0, 0, 1, 1] });
   });
 
   it("v は 4 つの座標が必要（多い・少ないものは無視する）", () => {
@@ -121,37 +132,41 @@ describe("parseClientMessage: 視界", () => {
   });
 });
 
-describe("ServerMessageSchema（サーバーが送る形）", () => {
-  const star = { id: "s1", x: 0, y: 0, c: 0, by: "f".repeat(32), ts: 1 };
+// サーバーが送る形（ServerMessageSchema）は、ここで型の写しを作って確かめない。実際に送られたフレームを、
+// ランタイムのテスト（server/tests/runtime/helpers.ts）がテスト専用の厳密なスキーマ（server/tests/support/strict-protocol.ts）で
+// 1 つ残らず検証する
 
-  it("サーバーが送るメッセージを通す", () => {
-    const msgs: ServerMessage[] = [
-      {
-        t: "welcome",
-        id: "abcd1234",
-        me: "f".repeat(32),
-        sendMs: 100,
-        dots: [{ id: "x", x: 0, y: 0, c: 0 }],
-        stars: [star],
-        links: [],
-      },
-      { t: "rate", sendMs: 200 },
-      { t: "reject", kind: "star", id: "s1" },
-      { t: "ps", d: [["abcd1234", 0.5, 0.5, 3]] },
-      { t: "pulse", x: 0, y: 0, c: 1 },
-      { t: "star", ...star },
-      { t: "unstar", id: "s1" },
-      { t: "admire", id: "s1", ts: 2 },
-      { t: "link", id: "l1", a: "s1", b: "s2", by: "f".repeat(32), ts: 1 },
-      { t: "unlink", id: "l1" },
-      { t: "leave", id: "abcd1234" },
-    ];
-    for (const m of msgs) expect(v.is(ServerMessageSchema, m)).toBe(true);
+// 上の厳密なスキーマ自体が、漏れを見逃さないこと（ランタイムのテストの確かめが空回りしていないことの対照）
+describe("テスト用の厳密なスキーマ（strictFrameProblem）", () => {
+  const OWNER = "f".repeat(32);
+  const star = { t: "star", id: "s1", x: 0, y: 0, c: 0, by: OWNER, ts: 1 };
+  const ok = (m: unknown) => strictFrameProblem(JSON.stringify(m));
+
+  it("仕様どおりのフレームと pong は通す", () => {
+    expect(ok(star)).toBeNull();
+    expect(ok({ t: "welcome", id: "a", me: OWNER, sendMs: 100, dots: [], stars: [], links: [] })).toBeNull();
+    expect(strictFrameProblem("pong")).toBeNull();
   });
 
-  it("未知の種類・形の違うものは通さない", () => {
-    expect(v.is(ServerMessageSchema, { t: "evil" })).toBe(false);
-    expect(v.is(ServerMessageSchema, { t: "reject", kind: "pulse", id: "x" })).toBe(false);
-    expect(v.is(ServerMessageSchema, { t: "ps", d: [["a", 0, 0]] })).toBe(false);
+  it("保存専用の born / v、uid、知らないキー、持ち主 ID の形でない by / me、null になった数値は通さない", () => {
+    expect(ok({ ...star, born: 1 })).not.toBeNull();
+    expect(ok({ ...star, v: 2 })).not.toBeNull();
+    expect(ok({ ...star, uid: UID })).not.toBeNull();
+    expect(ok({ ...star, origin: "x" })).not.toBeNull();
+    expect(ok({ ...star, by: UID })).not.toBeNull();
+    expect(ok({ ...star, x: null })).not.toBeNull();
+    expect(ok({ t: "welcome", id: "a", me: UID, sendMs: 100, dots: [], stars: [], links: [] })).not.toBeNull();
+    expect(
+      ok({
+        t: "welcome",
+        id: "a",
+        me: OWNER,
+        sendMs: 100,
+        dots: [],
+        stars: [{ ...star, t: undefined, born: 1 }],
+        links: [],
+      }),
+    ).not.toBeNull();
+    expect(strictFrameProblem("hello")).not.toBeNull();
   });
 });

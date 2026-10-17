@@ -24,10 +24,19 @@ describe("crowdCounts", () => {
   });
 
   it("全探索と同じ結果になる", () => {
+    // 種を固定した擬似乱数（mulberry32）。失敗したときに同じ点の集合で再現できるように
+    let seed = 0x5eed1234;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
     const pts = Array.from({ length: 300 }, (_, i) => ({
       id: `p${i}`,
-      x: Math.random() * 0.5,
-      y: Math.random() * 0.5,
+      x: rand() * 0.5,
+      y: rand() * 0.5,
     }));
     const r = 0.06;
     const fast = crowdCounts(pts, r);

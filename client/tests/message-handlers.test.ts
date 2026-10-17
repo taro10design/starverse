@@ -132,7 +132,7 @@ describe("message-handlers", () => {
   it("unstar: 自分の星（by が持ち主 ID）は幽霊になり、他人の星はただ消える。つながる線も消える", () => {
     const { u, dispatch } = setup();
     dispatch(welcome());
-    dispatch({ t: "star", ...star("mine", ME) });
+    dispatch({ t: "star", ...star("mine", ME), ts: Date.now() });
     dispatch({ t: "star", ...star("theirs", "someone") });
     dispatch({ t: "star", ...star("uid-by", u.uid) }); // uid そのものは持ち主 ID ではない
     dispatch({ t: "link", id: "l1", a: "mine", b: "theirs", by: "x", ts: 1 });
@@ -143,6 +143,15 @@ describe("message-handlers", () => {
     expect(u.ghosts.has("theirs")).toBe(false);
     expect(u.ghosts.has("uid-by")).toBe(false);
     expect(u.links.size).toBe(0);
+  });
+
+  it("unstar: 寿命切れの自分の星は幽霊にしない（welcome の判定と同じ）", () => {
+    const { u, dispatch } = setup();
+    dispatch(welcome());
+    dispatch({ t: "star", ...star("old", ME), ts: 0 });
+    dispatch({ t: "unstar", id: "old" });
+    expect(u.stars.has("old")).toBe(false);
+    expect(u.ghosts.has("old")).toBe(false);
   });
 
   it("reject star: 自分の画面から星と付いた線を取り消す。unstar は送らず、幽霊にもしない", () => {
@@ -331,6 +340,75 @@ describe("Universe", () => {
       expect(store.has("uchu-uid")).toBe(false);
       expect(replaceState).toHaveBeenCalledWith(null, "", "/?solo#x");
     } finally {
+      vi.stubGlobal("location", { search: "", hostname: "localhost", host: "localhost", port: "" });
+    }
+  });
+
+  it("?key= が形式に合わなければ採用せず、保存済みの鍵を使う。URL からは消す", () => {
+    store.clear();
+    store.set("uchu-key", "saved-key-123");
+    const replaceState = vi.fn();
+    for (const bad of ["short", "has space!!", "x".repeat(65), ""]) {
+      vi.stubGlobal("location", {
+        search: `?key=${encodeURIComponent(bad)}`,
+        pathname: "/",
+        hash: "",
+        hostname: "localhost",
+      });
+      vi.stubGlobal("history", { replaceState });
+      try {
+        const u = new Universe(false, () => undefined);
+        expect(u.uid).toBe("saved-key-123");
+        expect(store.get("uchu-key")).toBe("saved-key-123");
+      } finally {
+        vi.stubGlobal("location", { search: "", hostname: "localhost", host: "localhost", port: "" });
+      }
+    }
+    expect(replaceState).toHaveBeenCalledTimes(4);
+    expect(replaceState).toHaveBeenLastCalledWith(null, "", "/");
+  });
+
+  it("?key= が形式に合わず、保存済みの鍵も無ければ新しく作る", () => {
+    store.clear();
+    vi.stubGlobal("location", { search: "?key=bad", pathname: "/", hash: "", hostname: "localhost" });
+    vi.stubGlobal("history", { replaceState: vi.fn() });
+    try {
+      const u = new Universe(false, () => undefined);
+      expect(u.uid).not.toBe("bad");
+      expect(u.uid).toMatch(/^[\w-]{8,64}$/);
+      expect(store.get("uchu-key")).toBe(u.uid);
+    } finally {
+      vi.stubGlobal("location", { search: "", hostname: "localhost", host: "localhost", port: "" });
+    }
+  });
+
+  it("ソロで有効な別の鍵のリンクを開いたら、保存済みのソロの星と線の持ち主を新しい鍵に移す", () => {
+    store.clear();
+    store.set("uchu-key", "old-key-123");
+    store.set(
+      "uchu-solo",
+      JSON.stringify({
+        stars: [star("s1", "old-key-123"), star("s2", "someone-else")],
+        links: [{ id: "l1", a: "s1", b: "s1", by: "old-key-123", ts: 1 }],
+      }),
+    );
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { search: "?key=new-key-456&solo", pathname: "/", hash: "", hostname: "localhost" });
+    vi.stubGlobal("history", { replaceState: vi.fn() });
+    try {
+      const u = new Universe(true, () => undefined);
+      expect(u.uid).toBe("new-key-456");
+      expect(u.stars.get("s1")?.by).toBe("new-key-456");
+      expect(u.stars.get("s2")?.by).toBe("someone-else");
+      expect(u.links.get("l1")?.by).toBe("new-key-456");
+      const s1 = u.stars.get("s1");
+      if (!s1) throw new Error("星が無い");
+      expect(u.isMine(s1)).toBe(true);
+      vi.advanceTimersByTime(1000); // 保存は間引かれる
+      expect(store.get("uchu-solo")).toContain('"by":"new-key-456"');
+      expect(store.get("uchu-solo")).not.toContain("old-key-123");
+    } finally {
+      vi.useRealTimers();
       vi.stubGlobal("location", { search: "", hostname: "localhost", host: "localhost", port: "" });
     }
   });

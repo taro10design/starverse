@@ -27,12 +27,64 @@ describe("不正な入力", () => {
     a.c.send({ t: "star", id: bad.color, x: 0, y: 0, c: 99 });
     // 512 バイトを超えるメッセージ（中身は正しい星）
     a.c.send(JSON.stringify({ t: "star", id: bad.big, x: 0, y: 0, c: 0 }) + " ".repeat(600));
-    a.c.send({ t: "p", x: Infinity, y: 0, c: 0 });
     await roundTrip(a, watcher);
     expect(a.c.closed).toBe(false);
     const w = (await join()).w;
     for (const id of Object.values(bad)) expect(w.stars.some((s) => s.id === id)).toBe(false);
     expect(watcher.c.of("star").some((s) => Object.values(bad).includes(s.id))).toBe(false);
+  });
+
+  // JSON.stringify は NaN / Infinity を null にしてしまうので、生の文字列で送る。
+  // 1e999 は JSON.parse で Infinity になる。NaN はそもそも JSON として読めない
+  const nonFinite = ["1e999", "-1e999", "NaN", "Infinity"];
+
+  it("座標が NaN / Infinity の星は置かれない", async () => {
+    const a = await join();
+    const watcher = await join();
+    const ids: string[] = [];
+    for (const n of nonFinite) {
+      for (const field of ["x", "y"] as const) {
+        const id = newId();
+        ids.push(id);
+        const x = field === "x" ? n : "0";
+        const y = field === "y" ? n : "0";
+        a.c.send(`{"t":"star","id":"${id}","x":${x},"y":${y},"c":0}`);
+      }
+    }
+    await roundTrip(a, watcher);
+    expect(a.c.closed).toBe(false);
+    expect(watcher.c.of("star").some((s) => ids.includes(s.id))).toBe(false);
+    const w = (await join()).w;
+    expect(w.stars.some((s) => ids.includes(s.id))).toBe(false);
+  });
+
+  it("座標が NaN / Infinity の位置（p）は無視され、前の位置のまま", async () => {
+    const a = await join();
+    const watcher = await join();
+    const near: [number, number, number, number] = [-10, -10, 10, 10];
+    watcher.c.send({ t: "p", x: 0, y: 0, c: 0, v: near });
+    a.c.send({ t: "p", x: 1, y: 1, c: 2, v: near });
+    const first = await watcher.c.waitFor("ps", (m) => m.d.some((p) => p[0] === a.w.id && p[1] === 1 && p[2] === 1));
+    const start = watcher.c.of("ps").indexOf(first);
+    for (const n of nonFinite) {
+      a.c.send(`{"t":"p","x":${n},"y":1,"c":2}`);
+      a.c.send(`{"t":"p","x":1,"y":${n},"c":2}`);
+    }
+    // 正しい位置を送り、それが届いたら、それより前の不正な位置は処理済み
+    a.c.send({ t: "p", x: 2, y: 2, c: 2 });
+    await watcher.c.waitFor("ps", (m) => m.d.some((p) => p[0] === a.w.id && p[1] === 2 && p[2] === 2));
+    expect(a.c.closed).toBe(false);
+    // (1, 1) が届いてから後に watcher に届いた a の位置は、正しく送った (1, 1) と (2, 2) だけ
+    // （有限でない値は JSON で null になるので、helpers の厳密な検証でも落ちる）
+    const seen = watcher.c
+      .of("ps")
+      .slice(start)
+      .flatMap((m) => m.d.filter((p) => p[0] === a.w.id))
+      .map((p) => `${p[1]},${p[2]}`);
+    expect(new Set(seen)).toEqual(new Set(["1,1", "2,2"]));
+    // 後から入った人の welcome にも、a は (2, 2) で載っている
+    const later = await join();
+    expect(later.w.dots.find((d) => d.id === a.w.id)).toMatchObject({ x: 2, y: 2, c: 2 });
   });
 
   it("長すぎる星の id は切り詰めて受け付ける", async () => {

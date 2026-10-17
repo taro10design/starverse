@@ -4,6 +4,7 @@ import { placeAgain, removeById } from "./ops";
 import type { StarSnap } from "./ops";
 
 // 消：なぞった星を消す（消モードは誰の星でも消せる）。
+// ピンチの 1 本目の指で消さないよう、down は Input がピンチでない操作と確定してから呼ぶ（押した時点の位置で）。
 // 履歴に積むのは自分の星だけ。他人の星を undo で置き直すと持ち主が自分に移ってしまうので、戻さない
 export class EraseTool implements Tool {
   readonly name = "erase";
@@ -30,7 +31,7 @@ export class EraseTool implements Tool {
 
   private eraseAt(p: PointerInfo) {
     const { universe, hit } = this.ctx;
-    const s = hit.star(p.sx, p.sy, 16);
+    const s = hit.star(p, 16);
     if (!s) return;
     if (universe.isMine(s)) this.batch?.push(snap(s));
     universe.deleteStar(s);

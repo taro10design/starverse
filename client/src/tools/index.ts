@@ -8,6 +8,7 @@ import { GhostTool } from "./ghost-tool";
 
 export type { Tool, ToolContext, PointerInfo, LinkPreview, Feedback } from "./tool";
 export { HitTester } from "./hit";
+export type { WorldPoint } from "./hit";
 
 // ツールを足すときは、tools/ にクラスを足してここに登録する（ToolName にも名前を足す）
 export function createTools(ctx: ToolContext): Record<ToolName, Tool> {

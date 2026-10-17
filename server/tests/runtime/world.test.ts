@@ -2,7 +2,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_STARS_PER_USER } from "../../../shared/limits";
-import { HEX32, cleanup, join, leaksServerOnly, newId, waitFor } from "./helpers";
+import { evictDurableObject } from "cloudflare:test";
+import { HEX32, cleanup, join, newId, roomStub, snapshot, waitFor } from "./helpers";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -20,8 +21,9 @@ describe("星", () => {
     expect(star.by).toMatch(HEX32);
     expect(star.by).not.toBe(b.c.uid);
     expect(typeof star.ts).toBe("number");
-    expect(leaksServerOnly(star)).toBe(false);
-    expect(JSON.stringify(a.c.got)).not.toContain(b.c.uid);
+    // 配信される項目は仕様（shared/protocol.ts の star）のものだけ。born / v / uid などは無い
+    // （すべての受信フレームの厳密な検証と uid の漏れの確認は、helpers の cleanup が各テストのあとに行う）
+    expect(Object.keys(star).sort()).toEqual(["by", "c", "id", "t", "ts", "x", "y"]);
   });
 
   it("星の消去が他の接続に届く（星は誰でも消せる。docs/specs/0001 #5）", async () => {
@@ -93,7 +95,10 @@ describe("星", () => {
     await waitFor(() => a.c.of("reject").filter((m) => m.kind === "star").length >= 6, 3000, "6 件の reject");
     const rejected = new Set(a.c.of("reject").map((m) => m.id));
     expect(rejected.size).toBe(6);
-    const kept = (await join()).w.stars.filter((s) => ids.includes(s.id));
+    // 「保存も」を確かめるため、接続を閉じて Durable Object を退避し（メモリを捨て）、保存先から読み直させてから数える
+    await a.c.close();
+    await evictDurableObject(roomStub(), { webSockets: "close" });
+    const kept = (await snapshot()).stars.filter((s) => ids.includes(s.id));
     expect(kept).toHaveLength(MAX_STARS_PER_USER);
     expect(kept.some((s) => rejected.has(s.id))).toBe(false);
   });
@@ -118,7 +123,7 @@ describe("線", () => {
     const link = await a.c.waitFor("link", (l) => l.id === id);
     expect(link).toMatchObject({ id, a: s1, b: s2, by: b.w.me });
     expect(typeof link.ts).toBe("number");
-    expect(leaksServerOnly(link)).toBe(false);
+    expect(Object.keys(link).sort()).toEqual(["a", "b", "by", "id", "t", "ts"]);
   });
 
   it("同じ 2 点の線の重複は reject される（向きが逆でも）", async () => {

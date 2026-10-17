@@ -16,7 +16,7 @@ export class MoveTool implements Tool {
   up(p: PointerInfo, tap: boolean) {
     if (!tap || !this.ctx.canEdit()) return; // 消す・きらめき・復活はサーバーへ送るので、切れている間はしない
     const { universe, history, hit, feedback } = this.ctx;
-    const s = hit.star(p.sx, p.sy, 20);
+    const s = hit.star(p, 20);
     if (s) {
       if (universe.isMine(s)) {
         deleteMine(this.ctx, s); // 自分の星をタップで消す
@@ -26,7 +26,7 @@ export class MoveTool implements Tool {
       }
       return;
     }
-    const g = hit.ghost(p.sx, p.sy);
+    const g = hit.ghost(p);
     if (g) {
       const gg = { ...g };
       if (!universe.reviveGhost(g)) return; // 消えた自分の星はタップで復活（上限なら幽霊のまま）

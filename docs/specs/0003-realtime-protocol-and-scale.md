@@ -57,7 +57,7 @@
 | 6 | 視界の遠い相手には、近くの波紋が届かない | e2e |
 | 7 | 他の人の位置は、視界内の人にだけ届く。自分の位置は返らない | e2e / message-handlers.test「ps」 |
 | 8 | 不正な入力（範囲外の座標・未知の種類・大きすぎるメッセージ）のあとも接続が保たれる | validate.test / runtime robustness.test / e2e |
-| 9 | 操作が連続して多すぎると、超えた分は捨てられ、あふれ続けると切断される（直近 10 秒で、あふれ 100 通以上かつ割合 0.5 以上）。上限ぶんの一括操作（星 64 個の全消去・全復活）は捨てられない | rate-limit.test / inbound.test / config.test「レート制限の設定」 / runtime robustness.test |
+| 9 | 操作が連続して多すぎると、超えた分は捨てられ、あふれ続けると切断される（直近 10 秒で、あふれ 100 通以上かつ割合 0.5 以上）。上限ぶんの一括操作（星 64 個の全消去・全復活）は、クライアントが 1 秒に 20 件ずつに小分けして送る（`client/src/op-pacer.ts`）ので捨てられない | rate-limit.test / inbound.test / config.test「レート制限の設定」 / runtime robustness.test |
 | 10 | 1 つのハンドラが例外を起こしても、部屋全体は止まらない | 手動（room.ts の try/catch） |
 | 11 | `ping` に `pong` が返る（サーバーを起こさない） | e2e / runtime robustness.test |
 | 12 | `/stats` が空ごとの接続数・星の数・送信間隔を返す（token が無い・違うときは 404）。10 秒キャッシュされる | e2e / runtime robustness.test |

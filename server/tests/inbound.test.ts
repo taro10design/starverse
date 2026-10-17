@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { COST, LIMITS, RATE } from "../src/config";
+import { ID_MAX_LENGTH } from "../../shared/limits";
 import {
   IdentifyBacklog,
+  PositionPace,
   ViolationCounter,
   classify,
   extraCost,
   helloExpired,
   nextAlarmAt,
+  rejectFor,
   screenRaw,
 } from "../src/inbound";
 import { TokenBucket } from "../src/rate-limit";
@@ -19,14 +22,23 @@ describe("screenRaw（JSON を読む前の関門）", () => {
     const b = new TokenBucket(2, 0, 0, LIMITS.rateWindowMs);
     expect(screenRaw("{}", b, 0)).toBe("accept");
     expect(screenRaw("{}", b, 0)).toBe("accept");
-    expect(screenRaw("{}", b, 0)).toBe("discard"); // 読まずに捨てる
+    expect(screenRaw("{}", b, 0)).toBe("limited"); // 読まずに捨てる（星・線なら reject だけ返す。rejectFor）
   });
 
   it("大きすぎる・文字列でないメッセージは捨てるが、トークンは使う", () => {
     const b = new TokenBucket(2, 0, 0, LIMITS.rateWindowMs);
     expect(screenRaw("x".repeat(LIMITS.maxMessageBytes + 1), b, 0)).toBe("discard");
     expect(screenRaw(new ArrayBuffer(4), b, 0)).toBe("discard");
-    expect(screenRaw("{}", b, 0)).toBe("discard"); // 上の 2 通でトークンが尽きた
+    expect(screenRaw("{}", b, 0)).toBe("limited"); // 上の 2 通でトークンが尽きた
+  });
+
+  it("大きさは UTF-8 のバイト数で見る（文字数ではない）", () => {
+    const b = new TokenBucket(10, 0, 0, LIMITS.rateWindowMs);
+    const fits = "あ".repeat(Math.floor(LIMITS.maxMessageBytes / 3)); // 3 バイト × 170 = 510 バイト
+    const over = "あ".repeat(Math.floor(LIMITS.maxMessageBytes / 3) + 1); // 513 バイト（文字数は 171）
+    expect(over.length).toBeLessThan(LIMITS.maxMessageBytes);
+    expect(screenRaw(fits, b, 0)).toBe("accept");
+    expect(screenRaw(over, b, 0)).toBe("discard");
   });
 
   it("大きすぎるメッセージを送り続けても切断される", () => {
@@ -108,9 +120,15 @@ describe("classify（hello の前後での振り分け）", () => {
     expect(classify(true, json({ t: "hello", uid: "short" }))).toEqual({ do: "violation" });
   });
 
-  it("hello 後: 他のメッセージは処理へ、読めないものは無視", () => {
+  it("hello 後: 他のメッセージは処理へ。種類は正しいが形の合わないものは無視", () => {
     expect(classify(true, json({ t: "unstar", id: "s1" }))).toEqual({ do: "dispatch", msg: { t: "unstar", id: "s1" } });
-    expect(classify(true, "not json")).toEqual({ do: "ignore" });
+    expect(classify(true, json({ t: "star", id: "s1", x: "NaN", y: 0, c: 0 }))).toEqual({ do: "ignore" });
+  });
+
+  it("hello 後: 読めない JSON・未知の t は違反（正規のクライアントは送らない）", () => {
+    expect(classify(true, "not json")).toEqual({ do: "violation" });
+    expect(classify(true, json({ t: "evil" }))).toEqual({ do: "violation" });
+    expect(classify(true, "123")).toEqual({ do: "violation" });
   });
 });
 
@@ -158,13 +176,22 @@ describe("hello の締め切り", () => {
     expect(helloExpired(0, LIMITS.helloTimeoutMs)).toBe(true);
   });
 
-  it("次の alarm: hello を待つ接続が無ければ pruneIntervalMs 後", () => {
-    expect(nextAlarmAt(1000, [])).toBe(1000 + LIMITS.pruneIntervalMs);
+  it("次の alarm: hello を待つ接続も、星・線も無ければ張らない（null）", () => {
+    expect(nextAlarmAt(1000, [], null)).toBeNull();
+  });
+
+  it("次の alarm: 次に寿命が切れる時刻。ただし alarmMinMs 以上・alarmMaxMs 以下に収める", () => {
+    const now = 1_000_000;
+    expect(nextAlarmAt(now, [], now + 120_000)).toBe(now + 120_000);
+    expect(nextAlarmAt(now, [], now + 1000)).toBe(now + LIMITS.alarmMinMs); // 起き続けない
+    expect(nextAlarmAt(now, [], now - 5000)).toBe(now + LIMITS.alarmMinMs); // 過ぎていても同じ
+    expect(nextAlarmAt(now, [], now + 10 * LIMITS.alarmMaxMs)).toBe(now + LIMITS.alarmMaxMs);
   });
 
   it("次の alarm: hello を待つ接続があれば、いちばん早い締め切りに早める（ただし 1 秒より先）", () => {
-    expect(nextAlarmAt(5000, [4000, 2000])).toBe(2000 + LIMITS.helloTimeoutMs);
-    expect(nextAlarmAt(50_000, [0])).toBe(51_000); // 締め切りを過ぎていても、すぐには鳴らさない
+    expect(nextAlarmAt(5000, [4000, 2000], null)).toBe(2000 + LIMITS.helloTimeoutMs);
+    expect(nextAlarmAt(5000, [4000, 2000], 5000 + 3_600_000)).toBe(2000 + LIMITS.helloTimeoutMs);
+    expect(nextAlarmAt(50_000, [0], null)).toBe(51_000); // 締め切りを過ぎていても、すぐには鳴らさない
   });
 });
 
@@ -172,6 +199,78 @@ describe("screenRaw（バイナリ）", () => {
   it("ArrayBufferView も文字列でないので捨てる（トークンは使う）", () => {
     const b = new TokenBucket(1, 0, 0, LIMITS.rateWindowMs);
     expect(screenRaw(new Uint8Array(2), b, 0)).toBe("discard");
-    expect(screenRaw("{}", b, 0)).toBe("discard");
+    expect(screenRaw("{}", b, 0)).toBe("limited");
+  });
+});
+
+describe("rejectFor（レート制限で読まずに捨てた星・線への reject）", () => {
+  it("星・線の作成なら、t と id だけを取り出して reject を作る", () => {
+    expect(rejectFor(json({ t: "star", id: "s1", x: 0, y: 0, c: 0 }))).toEqual({ t: "reject", kind: "star", id: "s1" });
+    expect(rejectFor(json({ t: "link", id: "l1", a: "x", b: "y" }))).toEqual({ t: "reject", kind: "link", id: "l1" });
+  });
+
+  it("id は受け付けるときと同じ長さに切り詰める（クライアントが取り消す id と合わせる）", () => {
+    const long = "x".repeat(ID_MAX_LENGTH + 10);
+    expect(rejectFor(json({ t: "star", id: long }))).toEqual({
+      t: "reject",
+      kind: "star",
+      id: long.slice(0, ID_MAX_LENGTH),
+    });
+  });
+
+  it("星・線の作成以外・読めないもの・id の無いもの・大きすぎるものは null（黙って捨てる）", () => {
+    expect(rejectFor(json({ t: "unstar", id: "s1" }))).toBeNull();
+    expect(rejectFor(json({ t: "p", x: 0, y: 0, c: 0 }))).toBeNull();
+    expect(rejectFor("not json")).toBeNull();
+    expect(rejectFor('{"t":"star"')).toBeNull();
+    expect(rejectFor(json({ t: "star", id: 5 }))).toBeNull();
+    expect(rejectFor(json({ t: "star", id: "" }))).toBeNull();
+    expect(rejectFor(json({ t: "star", id: "s1", pad: "x".repeat(LIMITS.maxMessageBytes) }))).toBeNull();
+  });
+});
+
+describe("PositionPace（位置の送り過ぎ）", () => {
+  // 毎 everyMs ごとに p を n 通。途中で切断になったら true
+  function run(pace: PositionPace, everyMs: number, n: number, sendMs: number, from = 0): boolean {
+    for (let i = 0; i < n; i++) if (pace.record(from + i * everyMs, sendMs)) return true;
+    return false;
+  }
+
+  it("指示どおりの間隔（とその半分まで）なら、いつまでも切断しない", () => {
+    expect(run(new PositionPace(), 100, 1200, 100)).toBe(false);
+    expect(run(new PositionPace(), 50, 2400, 100)).toBe(false); // ちょうど半分は「短い」に入らない
+    expect(run(new PositionPace(), 1000, 120, 1000)).toBe(false);
+  });
+
+  it("通信の遅れでまとめて届いても（3 秒止まって 30 通）、切断しない", () => {
+    const pace = new PositionPace();
+    expect(run(pace, 100, 50, 100)).toBe(false);
+    expect(run(pace, 0, 30, 100, 8000)).toBe(false);
+    expect(run(pace, 100, 100, 100, 8100)).toBe(false);
+  });
+
+  it("指示より速く送り続ける接続は、窓の中で maxFastPositions 通に達したら切断する", () => {
+    // 満員近く（指示 600ms）の空で、上限いっぱい（毎秒 40 通）で送る
+    const pace = new PositionPace();
+    let closedAt = -1;
+    for (let i = 0; i < 400 && closedAt < 0; i++) if (pace.record(i * 25, 600)) closedAt = i;
+    expect(closedAt).toBe(LIMITS.maxFastPositions); // 最初の 1 通は間隔が分からないので数えない
+  });
+});
+
+describe("正規の操作はレート制限に掛からない（トークンの回復量を人数で絞らない理由）", () => {
+  // 1 通ぶんを、関門（screenRaw）と追加のトークン（extraCost）に通す
+  const pass = (b: TokenBucket, t: keyof typeof COST, now: number) =>
+    screenRaw("{}", b, now) === "accept" && b.take(extraCost(t), now);
+
+  it("なぞって星を毎秒 20 個（上限の 64 個）置きながら 10Hz で位置を送り、そのあと 64 個を一括で消せる", () => {
+    const b = newBucket();
+    const events: [number, keyof typeof COST][] = [];
+    for (let i = 0; i < LIMITS.maxStarsPerUser; i++) events.push([i * 50, "star"]);
+    for (let t = 0; t < LIMITS.maxStarsPerUser * 50; t += 100) events.push([t, "p"]);
+    events.sort((a, b) => a[0] - b[0]);
+    const end = LIMITS.maxStarsPerUser * 50;
+    for (let i = 0; i < LIMITS.maxStarsPerUser; i++) events.push([end, "unstar"]);
+    expect(events.every(([now, t]) => pass(b, t, now))).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { PALETTES, CROWD_R, GHOST_TTL, ttlFor } from "./constants";
 import { storage } from "./storage";
+import { randomUUID } from "./util";
 import { isGhost, isLinkData, isStarData, validItems } from "./validate";
 import type { RGB } from "./constants";
 import type { StarData, LinkData, ClientMessage } from "../../shared/protocol";
@@ -47,8 +48,14 @@ export interface Pair {
   binary: boolean;
 }
 
+// 持ち主の鍵を読んだ結果。replaced は、?key= の有効な別の鍵で置き換える前に保存されていた鍵
+export interface LoadedKey {
+  uid: string;
+  replaced: string | null;
+}
+
 export class Universe {
-  readonly uid = Universe.loadUid(); // 持ち主の鍵。秘密なので hello と鍵リンクにしか使わない
+  readonly uid: string; // 持ち主の鍵。秘密なので hello と鍵リンクにしか使わない
   // 持ち主 ID（星の by と比べて「自分の星か」を判定する）。オンラインでは welcome.me で決まり、
   // それまでは null（星も線も作れない）。ソロでは uid と同じ
   ownerId: string | null;
@@ -68,19 +75,26 @@ export class Universe {
     private solo: boolean,
     private send: (msg: ClientMessage) => void,
   ) {
+    const key = Universe.loadUid();
+    this.uid = key.uid;
     this.ownerId = solo ? this.uid : null;
     this.loadGhosts();
-    if (solo) this.loadSolo();
+    if (solo) this.loadSolo(key.replaced);
   }
 
   // このブラウザ固有の持ち主の鍵。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）。
-  // 鍵はアドレスバーに残すと画面共有や履歴から漏れるので、保存したら URL から消す。
+  // URL の鍵は形式（UID_PATTERN）に合うときだけ採用し、合わなければ保存済みの鍵（無ければ新しく作る）を使う
+  // （壊れたリンクで、持っていた鍵を失わない）。
+  // 鍵はアドレスバーに残すと画面共有や履歴から漏れるので、採用してもしなくても URL から消す。
   // 旧プロトコルでは鍵（uchu-uid）が星の by として全員に配信されていたので、それは読まずに消して作り直す
-  static loadUid(): string {
+  static loadUid(): LoadedKey {
     const params = new URLSearchParams(location.search);
     const fromUrl = params.get("key");
-    let uid = fromUrl ?? storage.get(KEY_STORAGE);
-    if (!uid || !UID_PATTERN.test(uid)) uid = crypto.randomUUID();
+    const stored = storage.get(KEY_STORAGE);
+    const validStored = stored !== null && UID_PATTERN.test(stored) ? stored : null;
+    const validUrl = fromUrl !== null && UID_PATTERN.test(fromUrl) ? fromUrl : null;
+    const uid = validUrl ?? validStored ?? randomUUID();
+    const replaced = validStored !== null && validStored !== uid ? validStored : null;
     storage.set(KEY_STORAGE, uid);
     storage.remove(LEGACY_KEY_STORAGE);
     if (fromUrl !== null) {
@@ -91,11 +105,15 @@ export class Universe {
         .filter((part) => part !== "" && part.split("=")[0] !== "key");
       history.replaceState(null, "", location.pathname + (rest.length ? "?" + rest.join("&") : "") + location.hash);
     }
-    return uid;
+    return { uid, replaced };
   }
 
   isMine(s: { by: string }): boolean {
     return this.ownerId !== null && s.by === this.ownerId;
+  }
+  // 星の寿命が切れているか（密集度に応じた寿命。サーバーと同じ ttlFor で判定する）
+  isExpired(s: Star, now = Date.now()): boolean {
+    return now - s.ts > ttlFor(s.n || 0);
   }
   private countMine(items: Iterable<{ by: string }>): number {
     let n = 0;
@@ -112,13 +130,22 @@ export class Universe {
   saveGhosts() {
     storage.setJSON("uchu-ghosts", [...this.ghosts.values()].slice(-128));
   }
-  // ソロモード：自分の星は localStorage に残る（消えない個人の空）
-  loadSolo() {
+  // ソロモード：自分の星は localStorage に残る（消えない個人の空）。
+  // 別の有効な鍵のリンクを開いて鍵が替わったら（replaced = 前の鍵）、前の鍵の星と線を新しい持ち主に移す
+  // （ソロでは持ち主 ID = uid。移さないと、保存していた自分の星を消せなくなる）
+  loadSolo(replaced: string | null = null) {
     const saved = storage.getJSON("uchu-solo");
     const fields: { stars?: unknown; links?: unknown } = typeof saved === "object" && saved !== null ? saved : {};
-    for (const s of validItems(fields.stars, isStarData)) this.stars.set(s.id, s);
-    for (const l of validItems(fields.links, isLinkData)) this.links.set(l.id, l);
+    let moved = false;
+    const adopt = <T extends { by: string }>(item: T): T => {
+      if (replaced === null || item.by !== replaced) return item;
+      moved = true;
+      return { ...item, by: this.uid };
+    };
+    for (const s of validItems(fields.stars, isStarData)) this.stars.set(s.id, adopt(s));
+    for (const l of validItems(fields.links, isLinkData)) this.links.set(l.id, adopt(l));
     this.pairsDirty = true;
+    if (moved) this.saveSolo();
   }
   saveSolo() {
     if (!this.solo) return;
@@ -136,7 +163,7 @@ export class Universe {
     if (by === null || this.countMine(this.stars.values()) >= MAX_STARS_PER_USER) return null;
     const s = ghost
       ? { id: ghost.id, x: ghost.x, y: ghost.y, c: ghost.c, by, ts: Date.now() }
-      : { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: color, by, ts: Date.now() };
+      : { id: randomUUID().slice(0, 12), x: nx, y: ny, c: color, by, ts: Date.now() };
     this.stars.set(s.id, s);
     const g = this.ghosts.get(s.id);
     if (g) {
@@ -196,7 +223,7 @@ export class Universe {
     const alive = new Set(stars.map((s) => s.id));
     let ghostsChanged = false;
     for (const s of this.stars.values()) {
-      if (alive.has(s.id) || !this.isMine(s) || now - s.ts > ttlFor(s.n || 0)) continue;
+      if (alive.has(s.id) || !this.isMine(s) || this.isExpired(s, now)) continue;
       this.ghosts.set(s.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: now });
       ghostsChanged = true;
     }
@@ -241,7 +268,7 @@ export class Universe {
     for (const l of this.links.values()) {
       if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return null;
     }
-    const l = { id: crypto.randomUUID().slice(0, 12), a, b, by, ts: Date.now() };
+    const l = { id: randomUUID().slice(0, 12), a, b, by, ts: Date.now() };
     return this.restoreLink(l) ? l : null;
   }
   // 線を（アンドゥなどで）引き直す。自分の線が上限に達していたら引かずに false
@@ -361,7 +388,7 @@ export class Universe {
     const now = Date.now();
     let dirty = false;
     for (const [id, s] of this.stars) {
-      if (!this.solo && now - s.ts > ttlFor(s.n || 0)) {
+      if (!this.solo && this.isExpired(s, now)) {
         // ひとりの宇宙では星は消えない
         this.stars.delete(id);
         this.dropLinksTouching(id);

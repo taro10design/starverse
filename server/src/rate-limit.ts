@@ -92,3 +92,61 @@ export class Cooldown {
     }
   }
 }
+
+// 直近 windowMs の中で起きた数（1 秒刻みのリング）。例: 部屋全体で新しく作った星の数
+export class SlidingCount {
+  private ring: { sec: number; n: number }[];
+
+  constructor(windowMs: number) {
+    const slots = Math.max(1, Math.ceil(windowMs / 1000));
+    this.ring = Array.from({ length: slots }, () => ({ sec: Number.NEGATIVE_INFINITY, n: 0 }));
+  }
+
+  add(now: number, n = 1) {
+    const sec = Math.floor(now / 1000);
+    const slot = this.ring[((sec % this.ring.length) + this.ring.length) % this.ring.length];
+    if (slot.sec !== sec) {
+      slot.sec = sec;
+      slot.n = 0;
+    }
+    slot.n += n;
+  }
+
+  // 直近の窓（今の 1 秒を含む）の合計
+  total(now: number): number {
+    const sec = Math.floor(now / 1000);
+    let n = 0;
+    for (const s of this.ring) if (sec - s.sec < this.ring.length) n += s.n;
+    return n;
+  }
+}
+
+// 鍵ごとの「今いくつあるか」を、上限つきで数える。例: 同じ接続元（IP）からの同時接続数。
+// 数が 0 になった鍵は忘れる（覚える鍵の数は、今ある接続の数を超えない）
+export class KeyedCounter {
+  private counts = new Map<string, number>();
+
+  constructor(private max: number) {}
+
+  // 上限に達していなければ 1 増やして true
+  tryAdd(key: string): boolean {
+    const n = this.counts.get(key) ?? 0;
+    if (n >= this.max) return false;
+    this.counts.set(key, n + 1);
+    return true;
+  }
+
+  remove(key: string) {
+    const n = (this.counts.get(key) ?? 0) - 1;
+    if (n > 0) this.counts.set(key, n);
+    else this.counts.delete(key);
+  }
+
+  count(key: string): number {
+    return this.counts.get(key) ?? 0;
+  }
+
+  get size(): number {
+    return this.counts.size;
+  }
+}

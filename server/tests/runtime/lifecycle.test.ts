@@ -1,11 +1,12 @@
 // 永続化・退出・ハイバネートからの復帰・旧形式の保存データ（docs/specs/0003、ADR 0006・0007）。黒箱テスト。
 //
-// Durable Object の退避（evictDurableObject）とストレージへの書き込み（runInDurableObject）だけは
-// @cloudflare/vitest-plugin の道具を使う。ストレージの鍵は ADR 0006 に書かれた旧形式（`stars` / `links`）だけを使う。
+// Durable Object の退避（evictDurableObject）とストレージの読み書き（runInDurableObject）だけは
+// @cloudflare/vitest-plugin の道具を使う。保存の形式（鍵 `s:<id>` / `l:<id>`、星の `born`、版の印 `v: 2`、
+// 持ち主 ID の形式）は ADR 0007・0009 と server/src/world.ts の StoredStar / StoredLink の型を仕様として扱う。
 
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, connect, join, newId, newUid, roomStub, snapshot } from "./helpers";
+import { cleanup, connect, forbidInFrames, join, newId, newUid, roomStub, sleep, snapshot } from "./helpers";
 
 afterEach(cleanup);
 
@@ -126,7 +127,9 @@ describe("ハイバネートからの復帰", () => {
     const a = await join();
     const watcher = await join();
     await evictDurableObject(roomStub(), { webSockets: "hibernate" });
-    a.c.send({ t: "hello", uid: newUid() });
+    const second = newUid();
+    forbidInFrames(second);
+    a.c.send({ t: "hello", uid: second });
     const sid = newId();
     a.c.send({ t: "star", id: sid, x: 0, y: 0, c: 0 });
     const star = await watcher.c.waitFor("star", (s) => s.id === sid);
@@ -149,23 +152,89 @@ describe("ハイバネートからの復帰", () => {
   });
 });
 
-describe("旧形式の保存データ（ADR 0006・0007）", () => {
-  it("旧キー stars / links の配列と、by に生の uid が入った星は、起動時に捨てられて welcome に出ない", async () => {
-    const rawUid = newUid();
-    const oldStar = { id: "old-star-1", x: 0, y: 0, c: 1, by: rawUid, ts: Date.now() };
-    const oldStar2 = { id: "old-star-2", x: 2, y: 0, c: 1, by: rawUid, ts: Date.now() };
-    const oldLink = { id: "old-link-1", a: "old-star-1", b: "old-star-2", by: rawUid, ts: Date.now() };
-    // 最初の接続より前に、旧形式のデータを書く
-    await runInDurableObject(roomStub(), async (_instance, state) => {
-      await state.storage.put("stars", [oldStar, oldStar2]);
-      await state.storage.put("links", [oldLink]);
-    });
-    // runInDurableObject で起きたインスタンスを壊し、次の接続で起動し直させる
-    await evictDurableObject(roomStub(), { webSockets: "close" });
+describe("保存データの読み込み（ADR 0006・0007）", () => {
+  // サーバーが作る持ち主 ID の形（OWNER_ID_PATTERN）に合う値。uid のハッシュである必要はない
+  const OWNER = "0123456789abcdef0123456789abcdef";
 
+  // 今の形式（版 2）の星と線
+  const goodStar = (id: string, x: number, now: number) => ({ id, x, y: 0, c: 1, by: OWNER, ts: now, born: now, v: 2 });
+  const goodLink = (id: string, a: string, b: string, now: number) => ({ id, a, b, by: OWNER, ts: now, v: 2 });
+
+  // 最初の接続より前に、保存先へ直接書く。そのあと runInDurableObject で起きたインスタンスを壊し、
+  // 次の接続で保存先から読み直させる
+  async function seed(records: Record<string, unknown>) {
+    await runInDurableObject(roomStub(), async (_instance, state) => {
+      await state.storage.put(records);
+    });
+    await evictDurableObject(roomStub(), { webSockets: "close" });
+  }
+
+  async function storedKeys(keys: string[]): Promise<string[]> {
+    return runInDurableObject(roomStub(), async (_instance, state) => [...(await state.storage.get(keys)).keys()]);
+  }
+
+  it("対照: 今の形式で保存された星と線は、読み込まれて welcome に出る（保存専用の born / v は出ない）", async () => {
+    const now = Date.now();
+    await seed({
+      "s:good-a": goodStar("good-a", 0, now),
+      "s:good-b": goodStar("good-b", 2, now),
+      "l:good-l": goodLink("good-l", "good-a", "good-b", now),
+    });
     const { w } = await join();
-    expect(w.stars.some((s) => s.id.startsWith("old-"))).toBe(false);
-    expect(w.links.some((l) => l.id.startsWith("old-"))).toBe(false);
-    expect(JSON.stringify(w)).not.toContain(rawUid);
+    expect([...w.stars].sort((p, q) => p.id.localeCompare(q.id))).toEqual([
+      { id: "good-a", x: 0, y: 0, c: 1, by: OWNER, ts: now },
+      { id: "good-b", x: 2, y: 0, c: 1, by: OWNER, ts: now },
+    ]);
+    expect(w.links).toEqual([{ id: "good-l", a: "good-a", b: "good-b", by: OWNER, ts: now }]);
+    expect(await storedKeys(["s:good-a", "s:good-b", "l:good-l"])).toHaveLength(3);
+  });
+
+  it("版の印が無い・古い、by が生の uid、端の星が無い線は、welcome に出ず、uid も漏れず、保存先から消える", async () => {
+    const now = Date.now();
+    const rawUid = newUid();
+    forbidInFrames(rawUid); // どの接続のどの受信フレームにも出てこないことを、cleanup でも確かめる
+    const bad: Record<string, unknown> = {
+      // (a) 版の印が無い / 版 1（他は今の形式と同じ）
+      "s:old-nov": { id: "old-nov", x: 4, y: 0, c: 1, by: OWNER, ts: now, born: now },
+      "s:old-v1": { ...goodStar("old-v1", 5, now), v: 1 },
+      "l:old-lnov": { id: "old-lnov", a: "good-a", b: "good-b", by: OWNER, ts: now },
+      // (b) by が生の uid（持ち主 ID の形ではない）
+      "s:old-uid": { ...goodStar("old-uid", 6, now), by: rawUid },
+      "l:old-luid": { ...goodLink("old-luid", "good-a", "good-b", now), by: rawUid },
+      // (c) 端の星が無い線（保存先に無い星 / 上で捨てられる星につながる線）
+      "l:old-dangling": goodLink("old-dangling", "good-a", "no-such-star", now),
+      "l:old-to-bad": goodLink("old-to-bad", "good-a", "old-uid", now),
+    };
+    await seed({
+      ...bad,
+      // 同じ回に今の形式のものも置き、読み込み自体が行われたことを確かめる
+      "s:good-a": goodStar("good-a", 0, now),
+      "s:good-b": goodStar("good-b", 2, now),
+      "l:good-l": goodLink("good-l", "good-a", "good-b", now),
+    });
+
+    const { c, w } = await join();
+    expect(w.stars.map((s) => s.id).sort()).toEqual(["good-a", "good-b"]);
+    expect(w.links.map((l) => l.id)).toEqual(["good-l"]);
+    // 星を置いて配信を一巡させてから、受け取った全フレームの生の文字列を見る
+    const watcher = await join();
+    const sid = newId();
+    c.send({ t: "star", id: sid, x: 0, y: 1, c: 0 });
+    await watcher.c.waitFor("star", (s) => s.id === sid);
+    for (const raw of [...c.raw, ...watcher.c.raw]) expect(raw).not.toContain(rawUid);
+    // 捨てたものは、読んだ鍵のまま保存先からも消える（起動のたびに読んで捨て直さない）。今の形式のものは残る
+    const badKeys = Object.keys(bad);
+    // 削除は非同期に書かれうるので、少しの間は待つ
+    let left = await storedKeys(badKeys);
+    for (let i = 0; i < 100 && left.length > 0; i++) {
+      await sleep(20);
+      left = await storedKeys(badKeys);
+    }
+    expect(left).toEqual([]);
+    expect((await storedKeys(["s:good-a", "s:good-b", "l:good-l"])).sort()).toEqual([
+      "l:good-l",
+      "s:good-a",
+      "s:good-b",
+    ]);
   });
 });

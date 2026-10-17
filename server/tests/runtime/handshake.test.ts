@@ -1,7 +1,7 @@
 // hello → welcome の握手（docs/specs/0003、ADR 0007）。本物の Workers ランタイム上で /ws を叩く黒箱テスト。
 
 import { afterEach, describe, expect, it } from "vitest";
-import { HEX32, cleanup, connect, join, newId } from "./helpers";
+import { HEX32, cleanup, connect, forbidInFrames, join, newId } from "./helpers";
 
 afterEach(cleanup);
 
@@ -61,7 +61,9 @@ describe("hello と welcome", () => {
   it("2 回目の hello は無視される（持ち主は最初の uid のまま。2 通目の welcome は来ない）", async () => {
     const watcher = await join();
     const { c, w } = await join();
-    c.send({ t: "hello", uid: crypto.randomUUID() });
+    const second = crypto.randomUUID();
+    forbidInFrames(second); // 2 回目の uid も、どこにも出てこない
+    c.send({ t: "hello", uid: second });
     const id = newId();
     c.send({ t: "star", id, x: 2, y: 2, c: 1 });
     // 2 回目の hello のあとに置いた星の持ち主が、最初の hello の me のまま

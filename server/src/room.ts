@@ -7,9 +7,16 @@
 // helloTimeoutMs 以内に hello が来ない接続は alarm で切る。uid そのものは保存も配信もしない。
 //
 // 受信は 1 通ごとに inbound.ts の関門を通す（読む前のトークン → hello 前後の振り分け → 追加のトークン）。
-// 接続元（IP）は見ない。同じ接続元ごとの制限は Cloudflare のエッジのレート制限ルールで行う（ADR 0009）。
+//
+// 人数は hello 済みの人（member）だけで数える（満員の判定・送信間隔）。hello 前の接続は別枠（maxPendingConnections）。
+// 接続の一覧はメモリ上の集合（members / pending）に持ち、配信のたびに接続の state を読み直さない。
+// 集合は起動・休止からの復帰のあとに 1 回だけ getConnections() から作り直す（ensureIndexed）。
+//
+// 同じ接続元（IP）の同時接続数は、メモリ上だけで数える（CF-Connecting-IP。保存も、接続の state への書き込みもしない）。
+// 休止から起きると数は 0 からになる（休止前の接続は数えない）。休止するのは誰も動いていないときなので、
+// 接続が押し寄せている間は数が保たれる。正確さより、IP を残さないことを優先する。
 
-import { type Connection, Server, type WSMessage } from "partyserver";
+import { type Connection, type ConnectionContext, Server, type WSMessage } from "partyserver";
 import type { ServerMessage } from "../../shared/protocol";
 import { LIMITS, RATE, sendMsFor } from "./config";
 import type { Env } from "./env";
@@ -22,15 +29,17 @@ import {
   IdentifyBacklog,
   isFlooding,
   nextAlarmAt,
+  PositionPace,
+  rejectFor,
   screenRaw,
   ViolationCounter,
 } from "./inbound";
 import { coarseFrame, movedFrames, TickClock, tickMsFor, welcomeDots } from "./presence";
-import { Cooldown, TokenBucket } from "./rate-limit";
+import { Cooldown, KeyedCounter, TokenBucket } from "./rate-limit";
 import { inView } from "./spatial";
 import { World } from "./world";
 
-// ハイバネートを越えて残す接続ごとの最小情報（uid は持たない）。connection.setState で接続に書く（約 2KB まで）。
+// ハイバネートを越えて残す接続ごとの最小情報（uid と IP は持たない）。connection.setState で接続に書く（約 2KB まで）。
 // id は配信に使う短い id（ps・leave・welcome.id）。PartyServer の connection.id は長いので配信には使わない
 interface Session {
   id: string;
@@ -43,7 +52,7 @@ interface Session {
 
 type Socket = Connection<Session>;
 // メモリ上だけの接続の状態（トークンバケット・視界・違反の数など）。休止から起きたら Session から作り直す
-type Live = Conn & { ws: Socket };
+type Live = Conn & { ws: Socket; pace: PositionPace };
 
 const isMember = <T extends Conn>(c: T): c is T & Member => c.owner !== null;
 
@@ -65,6 +74,13 @@ export class Universe extends Server<Env> implements RoomApi {
   private gone = new WeakSet<Socket>();
   // hello のハッシュ計算中の接続と、その間に届いたメッセージ（計算が済んだら順に処理する）
   private identifying = new Map<Live, IdentifyBacklog>();
+  // 開いている接続（片付け済みを除く）。hello 前（pending）と hello 済み（members）のどちらか一方に入る
+  private pending = new Set<Live>();
+  private members = new Set<Live & Member>();
+  private indexed = false; // 集合を getConnections() から作り直したか（インスタンスごとに 1 回）
+  // 同じ接続元（IP）の同時接続数。ipOf は数えた接続とその IP（片付けのときに減らす）。どちらもメモリ上だけ
+  private ips = new KeyedCounter(LIMITS.maxConnsPerIp);
+  private ipOf = new WeakMap<Socket, string>();
   private ticker: ReturnType<typeof setInterval> | null = null;
   private clock = new TickClock();
   private tickMs: number = LIMITS.tickMs;
@@ -86,15 +102,26 @@ export class Universe extends Server<Env> implements RoomApi {
     const links = await this.ctx.storage.list<unknown>({ prefix: "l:" });
     this.world.load(stars.entries(), links.entries());
     this.persist(); // load で捨てた星・線（旧形式・持ち主が uid・端の無い線）を、読んだ鍵のまま保存先からも消す
+    this.ensureIndexed();
     this.sendMs = sendMsFor(this.count());
   }
 
-  // 満員の判定と hello の締め切りは、PartyServer がソケットを受け入れる前に行う
+  // 満員の判定・hello 前の枠・同じ接続元の同時接続数・hello の締め切りは、PartyServer がソケットを受け入れる前に行う
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return super.fetch(request);
-    // 満員なら Worker に次の空を探させる
+    // onStart（PartyServer が super.fetch の中で呼ぶ）より前なので、休止から起きた直後でもここで集合を作る
+    this.ensureIndexed();
+    // 満員なら Worker に次の空を探させる（hello 済みの人だけを数える）
     if (this.count() >= LIMITS.roomCapacity) {
       return new Response("room full", { status: 503, headers: { "x-room-full": "1" } });
+    }
+    // hello 前の接続が多すぎる。次の空には回さない（x-room-full を付けない）
+    if (this.pending.size >= LIMITS.maxPendingConnections) {
+      return new Response("too many pending connections", { status: 503 });
+    }
+    const ip = request.headers.get("CF-Connecting-IP");
+    if (ip !== null && this.ips.count(ip) >= LIMITS.maxConnsPerIp) {
+      return new Response("too many connections from this address", { status: 429 });
     }
     // hello が来なければ切るための alarm を、ソケットを受け入れる前に用意する
     // （受け入れてから失敗すると、締め切りの無い接続が残る）
@@ -102,11 +129,18 @@ export class Universe extends Server<Env> implements RoomApi {
     return super.fetch(withoutQuery(request));
   }
 
-  onConnect(ws: Socket) {
+  onConnect(ws: Socket, ctx: ConnectionContext) {
     const now = Date.now();
     const session: Session = { id: crypto.randomUUID().slice(0, 8), owner: null, since: now, x: 0.5, y: 0.5, c: 0 };
     ws.setState(session);
-    this.live.set(ws, this.makeLive(ws, session, now));
+    const conn = this.makeLive(ws, session, now);
+    this.live.set(ws, conn);
+    this.track(conn);
+    // fetch で確かめてから受け入れるまでの間に、同じ接続元の接続が重なって上限を超えたときは切る
+    const ip = ctx.request.headers.get("CF-Connecting-IP");
+    if (ip === null) return;
+    if (this.ips.tryAdd(ip)) this.ipOf.set(ws, ip);
+    else this.close(conn, 1013, "too many connections from this address");
   }
 
   onMessage(ws: Socket, message: WSMessage) {
@@ -114,7 +148,15 @@ export class Universe extends Server<Env> implements RoomApi {
     if (!conn) return;
     // JSON を読む前に 1 通ぶんのトークンを取る（大きすぎる・文字列でないものも数える）
     const verdict = screenRaw(message, conn.bucket, Date.now());
-    if (verdict === "close") this.close(conn, 1008, "rate limit");
+    if (verdict === "close") return this.close(conn, 1008, "rate limit");
+    if (verdict === "limited") {
+      // 読まずに捨てた星・線は、送り主の画面から取り消してもらう（t と id だけを軽く読む。rejectFor）
+      if (isMember(conn) && typeof message === "string") {
+        const reject = rejectFor(message);
+        if (reject) this.send(conn, reject);
+      }
+      return;
+    }
     if (verdict !== "accept" || typeof message !== "string") return;
     this.handleText(conn, message);
   }
@@ -131,7 +173,8 @@ export class Universe extends Server<Env> implements RoomApi {
   onRequest(request: Request): Response {
     if (new URL(request.url).pathname !== "/stats") return new Response("not found", { status: 404 });
     return Response.json({
-      connections: this.count(),
+      connections: this.count(), // hello 済みの人
+      pending: this.pending.size, // hello 前の接続
       capacity: LIMITS.roomCapacity,
       stars: this.world.stars.size,
       links: this.world.links.size,
@@ -139,20 +182,25 @@ export class Universe extends Server<Env> implements RoomApi {
     });
   }
 
-  // 定期的な後片付けと、hello が来ない接続の切断。接続が残っている間だけ繰り返す
+  // 寿命切れの後片付けと、hello が来ない接続の切断。
+  // 次の alarm は「hello の締め切り」と「次に寿命が切れる星・線の時刻」の早い方（nextAlarmAt）。
+  // どちらも無ければ張らない（休止中の Durable Object を起こして全レコードを読み直さない）
   async onAlarm() {
     const now = Date.now();
     try {
       this.prune(true);
-      for (const c of [...this.sockets()]) {
-        if (!isMember(c) && !this.identifying.has(c) && helloExpired(c.since, now))
-          this.close(c, 1008, "hello timeout");
+      for (const c of [...this.pending]) {
+        if (!this.identifying.has(c) && helloExpired(c.since, now)) this.close(c, 1008, "hello timeout");
       }
     } catch (err) {
       console.error("alarm failed", err);
     }
-    const waiting = [...this.sockets()].filter((c) => !isMember(c)).map((c) => c.since);
-    if (this.count() > 0) await this.ctx.storage.setAlarm(nextAlarmAt(now, waiting));
+    const at = nextAlarmAt(
+      now,
+      [...this.pending].map((c) => c.since),
+      this.world.nextExpiryAt(),
+    );
+    if (at !== null) await this.ctx.storage.setAlarm(at);
   }
 
   // --- RoomApi（handlers から使われる） ---
@@ -168,13 +216,13 @@ export class Universe extends Server<Env> implements RoomApi {
   // hello を済ませた全員に送る（welcome 前の接続には何も送らない）
   broadcastAll(msg: ServerMessage, except?: Conn) {
     const out = JSON.stringify(msg);
-    for (const c of this.members()) if (c !== except) this.sendRaw(c.ws, out);
+    for (const c of this.members) if (c !== except) this.sendRaw(c.ws, out);
   }
 
   // 視界に入っている人にだけ送る（波紋のような「その場所」の出来事用）
   broadcastNear(msg: ServerMessage, x: number, y: number, opts: BroadcastOptions = {}) {
     const out = JSON.stringify(msg);
-    for (const c of this.members()) {
+    for (const c of this.members) {
       if (c === opts.except || (opts.requireView && !c.view)) continue;
       if (inView(c.view, x, y, LIMITS.viewMargin)) this.sendRaw(c.ws, out);
     }
@@ -186,10 +234,13 @@ export class Universe extends Server<Env> implements RoomApi {
     this.ensureTicker();
   }
 
-  // 前回から変わった分だけを書く。変更が無ければ何もしない
+  // 前回から変わった分だけを書く。変更が無ければ何もしない。
+  // 星・線を書いたときは、寿命切れを片付ける alarm が alarmMinMs 以内に鳴るようにする
+  // （alarm は早める方向にだけ動かし、鳴ったときに正確な時刻へ張り直す。onAlarm）
   persist() {
     const { put, del } = this.world.drainChanges();
     const keys = Object.keys(put);
+    if (keys.length) this.ctx.waitUntil(this.ensureAlarm(Date.now() + LIMITS.alarmMinMs));
     for (let i = 0; i < keys.length; i += 128) {
       const chunk: Record<string, unknown> = {};
       for (const k of keys.slice(i, i + 128)) chunk[k] = put[k];
@@ -229,6 +280,8 @@ export class Universe extends Server<Env> implements RoomApi {
 
     const msg = step.msg;
     const now = Date.now();
+    // 指示した間隔を守らずに位置を送り続ける接続は切る（受け取った分は課金されるので、切るほかに減らす方法がない）
+    if (msg.t === "p" && conn.pace.record(now, this.sendMs)) return this.close(conn, 1008, "position flood");
     const extra = extraCost(msg.t);
     if (extra > 0 && !conn.bucket.take(extra, now)) {
       // 置いたつもりの星・線を、送り主の画面から取り消してもらう
@@ -268,13 +321,15 @@ export class Universe extends Server<Env> implements RoomApi {
     this.identifying.delete(conn);
     if (!this.isLive(conn)) return; // 計算の間に切れた
 
-    this.updateRate(); // 既にいる人へ（新しい人には welcome で伝える）
+    // 寿命切れの片付けは members に入れる前に行う（welcome 前の接続に unstar を送らない。消えた星は welcome に載らない）
+    this.prune();
     conn.owner = owner;
+    this.track(conn);
+    this.updateRate(conn); // 既にいる人へ（新しい人には welcome で伝える）
     const now = Date.now();
     this.attach(conn, now);
 
-    this.prune();
-    const dots = welcomeDots(this.members(), conn, LIMITS.maxWelcomePeers);
+    const dots = welcomeDots(this.members, conn, LIMITS.maxWelcomePeers);
     const { stars, links } = this.world.snapshot(); // 保存専用の born / v は配らない
     this.send(conn, { t: "welcome", id: conn.id, me: owner, sendMs: this.sendMs, dots, stars, links });
     this.markDirty(conn); // 他の人に新しい光を知らせる
@@ -298,7 +353,7 @@ export class Universe extends Server<Env> implements RoomApi {
   }
 
   private tickOnce() {
-    const all = [...this.members()];
+    const all = [...this.members];
     const moved = all.filter((c) => c.dirty);
 
     // 人数が増えたらタイマーの間隔を広げる（1 回の処理が間に合わなくなるのを防ぐ）
@@ -336,33 +391,39 @@ export class Universe extends Server<Env> implements RoomApi {
     this.clock.wake();
   }
 
-  // 人数に応じた送信間隔が変わったら、全員に知らせる
-  private updateRate() {
+  // 人数に応じた送信間隔が変わったら、全員に知らせる（except には welcome で伝える）
+  private updateRate(except?: Conn) {
     const next = sendMsFor(this.count());
     if (next === this.sendMs) return;
     this.sendMs = next;
-    this.broadcastAll({ t: "rate", sendMs: next });
+    this.broadcastAll({ t: "rate", sendMs: next }, except);
   }
 
   // --- 接続 ---
 
-  // 開いている接続（hello 前を含む）。片付け済みのものは除く
-  private *sockets(): Generator<Live> {
-    for (const ws of this.getConnections<Session>()) {
-      const c = this.runtime(ws);
-      if (c) yield c;
+  // hello 済みの人数（満員の判定と送信間隔に使う。hello 前の接続は数えない）
+  private count(): number {
+    return this.members.size;
+  }
+
+  // 起動・休止からの復帰のあとに 1 回だけ、開いている接続から集合を作り直す
+  private ensureIndexed() {
+    if (this.indexed) return;
+    this.indexed = true;
+    for (const ws of this.getConnections<Session>()) this.runtime(ws);
+  }
+
+  // 接続を、持ち主の有無に応じて pending / members のどちらかに入れる
+  private track(conn: Live) {
+    if (isMember(conn)) {
+      this.pending.delete(conn);
+      this.members.add(conn);
+    } else {
+      this.pending.add(conn);
     }
   }
 
-  private *members(): Generator<Live & Member> {
-    for (const c of this.sockets()) if (isMember(c)) yield c;
-  }
-
-  private count(): number {
-    return [...this.sockets()].length;
-  }
-
-  // メモリ上の状態。休止から起きた直後は、接続の state から作り直す。片付け済みなら null
+  // メモリ上の状態。休止から起きた直後は、接続の state から作り直して集合に入れる。片付け済みなら null
   private runtime(ws: Socket): Live | null {
     if (this.gone.has(ws)) return null;
     const known = this.live.get(ws);
@@ -371,6 +432,7 @@ export class Universe extends Server<Env> implements RoomApi {
     if (!s) return null; // こちらから切った接続（close で state を消している）
     const conn = this.makeLive(ws, s, Date.now());
     this.live.set(ws, conn);
+    this.track(conn);
     return conn;
   }
 
@@ -393,6 +455,7 @@ export class Universe extends Server<Env> implements RoomApi {
       violations: new ViolationCounter(LIMITS.maxProtocolViolations),
       admired: new Cooldown(LIMITS.admireCooldownMs, LIMITS.admireCooldownEntries),
       attachedAt: now,
+      pace: new PositionPace(),
     };
   }
 
@@ -410,6 +473,13 @@ export class Universe extends Server<Env> implements RoomApi {
     this.gone.add(ws);
     this.live.delete(ws);
     this.identifying.delete(conn);
+    this.pending.delete(conn);
+    if (isMember(conn)) this.members.delete(conn);
+    const ip = this.ipOf.get(ws);
+    if (ip !== undefined) {
+      this.ips.remove(ip);
+      this.ipOf.delete(ws);
+    }
     if (isMember(conn)) this.broadcastAll({ t: "leave", id: conn.id }); // welcome 前の接続は誰にも見えていない
     this.updateRate();
     if (this.count() === 0) this.stopTicker();

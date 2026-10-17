@@ -6,6 +6,7 @@ import { OWNER_ID_PATTERN } from "../../shared/limits";
 import type { LinkData, StarData } from "../../shared/protocol";
 import { CROWD_R, STAR_TTL, ttlFor } from "../../shared/rules";
 import { LIMITS } from "./config";
+import { SlidingCount } from "./rate-limit";
 import { crowdCounts } from "./spatial";
 
 // 保存先（storage）のレコードの版。形式を変えたら上げる。load は違う版のレコードを全部捨てる
@@ -78,10 +79,14 @@ export class World {
   private dirtyPut = new Set<string>();
   private dirtyDel = new Set<string>();
   private lastPrune = 0;
+  // 部屋全体で直近 1 分に新しく作った星・線の数（メモリ上だけ。ハイバネートで数え直しになるのは許容する。
+  // 休止するのは誰も動いていないときなので、作成が続いている間は失われない）
+  private newStars = new SlidingCount(60_000);
+  private newLinks = new SlidingCount(60_000);
 
   // --- 星 ---
 
-  // 星を置く。上限超え・他人の星の上書きは null。戻り値は配る形（toWire 済み）。
+  // 星を置く。上限超え（全体・持ち主・部屋全体の作成速度）・他人の星の上書きは null。戻り値は配る形（toWire 済み）。
   // 持ち主が同じ id で置き直したときは位置・色だけを変え、born と ts（寿命）は据え置く。
   // 幽霊の復活は、星が一度消えたあとなので新しい星として扱う（born / ts は今）。
   placeStar(owner: string, id: string, x: number, y: number, c: number, now: number): StarData | null {
@@ -95,8 +100,10 @@ export class World {
     }
     if (this.stars.size >= LIMITS.maxStars || (this.starsByOwner.get(owner) ?? 0) >= LIMITS.maxStarsPerUser)
       return null;
+    if (this.newStars.total(now) >= LIMITS.maxNewStarsPerMinute) return null;
     const star: StoredStar = { id, x, y, c, by: owner, ts: now, born: now, v: STORE_VERSION };
     this.putStar(star);
+    this.newStars.add(now);
     return toWire(star);
   }
 
@@ -138,9 +145,11 @@ export class World {
     }
     if (this.links.size >= LIMITS.maxLinks || (this.linksByOwner.get(owner) ?? 0) >= LIMITS.maxLinksPerUser)
       return null;
+    if (this.newLinks.total(now) >= LIMITS.maxNewLinksPerMinute) return null;
 
     const link: LinkData = { id, a, b, by: owner, ts: now };
     this.putLink(link);
+    this.newLinks.add(now);
     return link;
   }
 
@@ -175,6 +184,17 @@ export class World {
       }
     }
     return result;
+  }
+
+  // 次に prune で消える星・線が出る最初の時刻（寿命を過ぎた直後）。何も無ければ null。
+  // 密集度は今の配置で計算する（あとから星が増えて寿命が縮んでも、星・線の作成時に alarm を早めるので遅れは小さい。room.ts）
+  nextExpiryAt(): number | null {
+    let at: number | null = null;
+    const earlier = (t: number) => (at === null || t < at ? t : at);
+    const counts = crowdCounts(this.stars.values(), CROWD_R);
+    for (const star of this.stars.values()) at = earlier(star.ts + ttlFor(counts.get(star.id) ?? 0) + 1);
+    for (const link of this.links.values()) at = earlier(link.ts + STAR_TTL + 1);
+    return at;
   }
 
   // --- 永続化 ---

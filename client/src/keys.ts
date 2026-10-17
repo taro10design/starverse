@@ -16,6 +16,7 @@ export interface KeyLike {
   ctrlKey: boolean;
   metaKey: boolean;
   altKey: boolean;
+  repeat: boolean; // 押しっぱなしによる自動リピート
   target: EventTarget | null;
 }
 
@@ -83,9 +84,12 @@ export class KeyState {
     // ブラウザやOSのショートカットを邪魔しないよう、Ctrl / Alt / Meta つきは扱わない（Undo/Redo を除く）
     if (e.ctrlKey || e.metaKey) {
       const k = e.key.toLowerCase();
+      if (k !== "z" && k !== "y") return NONE;
+      // 押しっぱなしの自動リピートでは undo / redo を連発しない（1 回ごとにサーバーへ操作を送るため）。
+      // ブラウザ既定の動作（入力欄の取り消しなど）にも渡さない
+      if (e.repeat) return { action: null, preventDefault: true };
       if (k === "z") return { action: { kind: e.shiftKey ? "redo" : "undo" }, preventDefault: true };
-      if (k === "y") return { action: { kind: "redo" }, preventDefault: true };
-      return NONE;
+      return { action: { kind: "redo" }, preventDefault: true };
     }
     if (e.altKey) return NONE;
 

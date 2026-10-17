@@ -25,7 +25,7 @@ export class GhostTool implements Tool {
   }
 
   private forgetAt(p: PointerInfo) {
-    const g = this.ctx.hit.ghost(p.sx, p.sy, 18);
+    const g = this.ctx.hit.ghost(p, 18);
     if (!g) return;
     this.batch?.push({ ...g });
     this.ctx.universe.forgetGhost(g);

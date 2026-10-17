@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Cooldown, TokenBucket } from "../src/rate-limit";
+import { Cooldown, KeyedCounter, SlidingCount, TokenBucket } from "../src/rate-limit";
 
 describe("TokenBucket", () => {
   it("容量まではバーストできる", () => {
@@ -90,5 +90,47 @@ describe("Cooldown（同じ鍵の操作の間隔）", () => {
     expect(c.allow("b", 6001)).toBe(false);
     expect(c.allow("c", 6001)).toBe(false);
     expect(c.size).toBeLessThanOrEqual(3);
+  });
+});
+
+describe("SlidingCount（直近の窓の中の数）", () => {
+  it("窓の中で足した数を返し、窓を過ぎた分は数えない", () => {
+    const w = new SlidingCount(60_000);
+    w.add(0);
+    w.add(30_000, 2);
+    expect(w.total(30_000)).toBe(3);
+    expect(w.total(59_999)).toBe(3);
+    expect(w.total(60_000)).toBe(2); // 0 秒目の 1 個が窓から出た
+    expect(w.total(90_000)).toBe(0);
+  });
+
+  it("長く空いたあとでも、古い枠の数が残らない", () => {
+    const w = new SlidingCount(10_000);
+    for (let t = 0; t < 10_000; t += 100) w.add(t);
+    expect(w.total(9_999)).toBe(100);
+    expect(w.total(1_000_000)).toBe(0);
+    w.add(1_000_000);
+    expect(w.total(1_000_000)).toBe(1);
+  });
+});
+
+describe("KeyedCounter（鍵ごとの同時の数）", () => {
+  it("上限までは増やせ、上限に達した鍵は断る（他の鍵は増やせる）", () => {
+    const c = new KeyedCounter(2);
+    expect(c.tryAdd("a")).toBe(true);
+    expect(c.tryAdd("a")).toBe(true);
+    expect(c.tryAdd("a")).toBe(false);
+    expect(c.tryAdd("b")).toBe(true);
+    expect(c.count("a")).toBe(2);
+  });
+
+  it("減らすと枠が空き、0 になった鍵は覚えない", () => {
+    const c = new KeyedCounter(1);
+    c.tryAdd("a");
+    c.remove("a");
+    expect(c.size).toBe(0);
+    expect(c.tryAdd("a")).toBe(true);
+    c.remove("zzz"); // 知らない鍵を減らしても負にならない
+    expect(c.count("zzz")).toBe(0);
   });
 });

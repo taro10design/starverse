@@ -46,6 +46,7 @@ const key = (code: string, k: string, mods: Partial<KeyLike> = {}): KeyLike => (
   ctrlKey: false,
   metaKey: false,
   altKey: false,
+  repeat: false,
   target: null,
   ...mods,
 });
@@ -105,6 +106,14 @@ describe("KeyState（キーの押下・解放は e.code で照合する）", () 
     expect(k.down(key("KeyY", "y", { metaKey: true })).action).toEqual({ kind: "redo" });
     expect(k.down(key("KeyA", "a", { altKey: true })).action).toBeNull();
     expect(k.active).toBe(false);
+  });
+
+  it("Ctrl+Z / Ctrl+Y の自動リピート（押しっぱなし）は無視する。既定の動作も止める", () => {
+    const k = new mod.KeyState();
+    expect(k.down(key("KeyZ", "z", { ctrlKey: true, repeat: true }))).toEqual({ action: null, preventDefault: true });
+    expect(k.down(key("KeyY", "y", { ctrlKey: true, repeat: true }))).toEqual({ action: null, preventDefault: true });
+    expect(k.down(key("KeyZ", "Z", { ctrlKey: true, shiftKey: true, repeat: true })).action).toBeNull();
+    expect(k.down(key("KeyC", "c", { ctrlKey: true, repeat: true })).preventDefault).toBe(false); // 他のショートカットは邪魔しない
   });
 
   it("Space: 押している間 spaceDown。ボタンや入力欄にフォーカスがあるときは preventDefault しない", () => {
@@ -257,5 +266,121 @@ describe("Input（ポインタ）", () => {
     input.handlePointerDown(pe(2, 400, 400));
     input.handlePointerUp(pe(2, 400, 400));
     expect(universe.stars.size).toBe(1);
+  });
+});
+
+describe("Input（押下の遅延確定。ピンチの 1 本目の指で操作しない）", () => {
+  const pulses = (app: ReturnType<typeof setup>["app"]) =>
+    app.network.send.mock.calls.filter(([m]) => (m as { t: string }).t === "pulse").length;
+
+  it("消しゴム: 2 本目の指でピンチになったら、1 本目の下の星を消さない。pulse・音・振動も出さない", () => {
+    vi.useFakeTimers();
+    try {
+      const { input, universe, app, pe } = setup();
+      const [wx, wy] = app.camera.screenToWorld(100, 100);
+      const s = universe.placeStar(wx, wy, 0);
+      if (!s) throw new Error("星が置けない");
+      input.setTool("erase");
+      input.handlePointerDown(pe(1, 100, 100));
+      input.handlePointerDown(pe(2, 300, 100));
+      vi.advanceTimersByTime(1000);
+      input.handlePointerUp(pe(2, 300, 100));
+      input.handlePointerUp(pe(1, 100, 100));
+      expect(universe.stars.has(s.id)).toBe(true);
+      expect(pulses(app)).toBe(0);
+      expect(app.ui.ping).not.toHaveBeenCalled();
+      expect(app.ui.haptic).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("消しゴム: すぐ離したら（タップ）押した所の星を消し、pulse・音・振動を 1 回ずつ出す", () => {
+    const { input, universe, app, pe } = setup();
+    const [wx, wy] = app.camera.screenToWorld(100, 100);
+    const s = universe.placeStar(wx, wy, 0);
+    if (!s) throw new Error("星が置けない");
+    input.setTool("erase");
+    input.handlePointerDown(pe(1, 100, 100));
+    expect(universe.stars.has(s.id)).toBe(true); // まだ確定していない
+    input.handlePointerUp(pe(1, 100, 100));
+    expect(universe.stars.has(s.id)).toBe(false);
+    expect(pulses(app)).toBe(1);
+    expect(app.network.send).toHaveBeenCalledWith({ t: "pulse", x: wx, y: wy });
+    expect(app.ui.ping).toHaveBeenCalledTimes(1);
+    expect(app.ui.haptic).toHaveBeenCalledTimes(1);
+  });
+
+  it("120ms 押し続けたら確定する（ツールの種類によらない）", () => {
+    vi.useFakeTimers();
+    try {
+      const { input, universe, app, pe } = setup();
+      const [wx, wy] = app.camera.screenToWorld(100, 100);
+      const s = universe.placeStar(wx, wy, 0);
+      if (!s) throw new Error("星が置けない");
+      input.setTool("erase");
+      input.handlePointerDown(pe(1, 100, 100));
+      vi.advanceTimersByTime(119);
+      expect(universe.stars.has(s.id)).toBe(true);
+      expect(pulses(app)).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(universe.stars.has(s.id)).toBe(false);
+      expect(pulses(app)).toBe(1);
+      input.handlePointerDown(pe(2, 300, 100)); // 確定したあとの 2 本目は、ツールを止めるだけ
+      input.handlePointerUp(pe(2, 300, 100));
+      input.handlePointerUp(pe(1, 100, 100));
+      expect(pulses(app)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("10px 以内の動きでは確定せず、10px を超えたら押した所で確定してからなぞりを続ける", () => {
+    const { input, universe, app, pe } = setup();
+    input.setTool("star");
+    const [wx0] = app.camera.screenToWorld(100, 100);
+    input.handlePointerDown(pe(1, 100, 100));
+    input.handlePointerMove(pe(1, 108, 100));
+    expect(universe.stars.size).toBe(0);
+    expect(pulses(app)).toBe(0);
+    input.handlePointerMove(pe(1, 112, 100));
+    expect(pulses(app)).toBe(1);
+    const xs = [...universe.stars.values()].map((s) => s.x);
+    expect(xs[0]).toBe(wx0); // 押した所
+    expect(universe.stars.size).toBe(2); // 続けてなぞった所にも置く
+    input.handlePointerUp(pe(1, 112, 100));
+  });
+
+  it("星ツール: 確定までの間にカメラが動いても、押した時点の位置に置く", () => {
+    vi.useFakeTimers();
+    try {
+      const { input, universe, app, pe } = setup();
+      input.setTool("star");
+      const [wx, wy] = app.camera.screenToWorld(300, 300);
+      input.handlePointerDown(pe(1, 300, 300));
+      app.camera.pan(200, 0);
+      vi.advanceTimersByTime(120);
+      expect([...universe.stars.values()]).toMatchObject([{ x: wx, y: wy }]);
+      input.handlePointerUp(pe(1, 300, 300));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("確定前の指が lostpointercapture / blur で片付いたら、何も起こさない", () => {
+    vi.useFakeTimers();
+    try {
+      const { input, universe, app, pe } = setup();
+      input.setTool("star");
+      input.handlePointerDown(pe(1, 100, 100));
+      input.handleLostCapture(pe(1, 100, 100));
+      input.handlePointerDown(pe(2, 200, 200));
+      input.handleBlur();
+      vi.advanceTimersByTime(1000);
+      expect(universe.stars.size).toBe(0);
+      expect(pulses(app)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
