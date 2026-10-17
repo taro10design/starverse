@@ -26,7 +26,7 @@
 - ルール自体は [server/src/world.ts](../server/src/world.ts)。Cloudflare に依存しない純粋なクラスなので、`server/tests/world.test.ts` にテストを足してから変える
 - 保存する形（星の `born`・版 `v`）を変えるときは `STORE_VERSION` を上げる。版の合わない旧形式のレコードは起動時に捨てられる（[ADR 0006](adr/0006-no-backward-compatibility.md)）
 - 位置の配信（誰に・何を送るか）は [server/src/presence.ts](../server/src/presence.ts)（純粋なロジック。`server/tests/presence.test.ts`）
-- 同じ接続元（IP）ごとの制限を Worker に足さない。エッジのレート制限ルールで行う（[ADR 0009](adr/0009-prefer-proven-components.md)）
+- 同じ接続元（IP）ごとの制限を増やすときは、IP を保存しない形にする。接続元を数える単位は `gateway.ts` の `addressKey`（IPv6 は /64）にそろえる（[ADR 0009](adr/0009-prefer-proven-components.md)）
 
 ## クライアントにツールを足す（例: 「色を塗る」）
 
