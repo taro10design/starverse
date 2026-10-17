@@ -31,15 +31,17 @@ class FakeWebSocket {
   readyState = 0;
   sent: string[] = [];
   closed = false;
+  autoPong = true; // false にすると、サーバーが ping に答えない（half-open）
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(readonly url: string) {
     FakeWebSocket.all.push(this);
   }
   send(data: string) {
     this.sent.push(data);
+    if (data === "ping" && this.autoPong) this.receive("pong");
   }
   close() {
     this.closed = true;
@@ -50,10 +52,10 @@ class FakeWebSocket {
     this.readyState = 1;
     this.onopen?.();
   }
-  drop() {
+  drop(code = 1006) {
     this.closed = true;
     this.readyState = 3;
-    this.onclose?.();
+    this.onclose?.({ code });
   }
   receive(msg: unknown) {
     this.onmessage?.({ data: typeof msg === "string" ? msg : JSON.stringify(msg) });
@@ -90,6 +92,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const WELCOME = { t: "welcome", id: "c1", me: "owner-hash", sendMs: 100, dots: [], stars: [], links: [] };
@@ -107,7 +110,14 @@ function setup() {
     if (!ws) throw new Error("接続が無い");
     return ws;
   };
-  return { net, universe, player, camera, last };
+  // つながって welcome まで受け取った接続
+  const joined = () => {
+    const ws = last();
+    ws.open();
+    ws.receive(WELCOME);
+    return ws;
+  };
+  return { net, universe, player, camera, last, joined };
 }
 
 describe("Network", () => {
@@ -131,60 +141,136 @@ describe("Network", () => {
   });
 
   it("切れたら待ってから 1 本だけつなぎ直す（二重にならない）", () => {
-    const { last } = setup();
-    const ws1 = last();
-    ws1.open();
+    const { joined } = setup();
+    const ws1 = joined();
     ws1.drop();
     ws1.onerror?.(); // 切れたあとに遅れて来たエラーも無視する
     expect(FakeWebSocket.all).toHaveLength(1);
-    vi.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(3000); // 1500ms × 0.5〜1.5
     expect(FakeWebSocket.all).toHaveLength(2);
   });
 
   it("古い接続の onclose は無視する", () => {
-    const { last } = setup();
-    const ws1 = last();
+    const { joined } = setup();
+    const ws1 = joined();
     const oldOnClose = ws1.onclose;
-    ws1.open();
     ws1.drop();
-    vi.advanceTimersByTime(60_000);
-    const ws2 = last();
-    ws2.open();
-    oldOnClose?.(); // 古い接続の閉じる通知が遅れて届いた
+    vi.advanceTimersByTime(3000);
+    const ws2 = joined();
+    oldOnClose?.({ code: 1006 }); // 古い接続の閉じる通知が遅れて届いた
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.all).toHaveLength(2);
     expect(ws2.closed).toBe(false);
   });
 
   it("古い接続のメッセージは無視する", () => {
-    const { last, universe } = setup();
-    const ws1 = last();
+    const { joined, universe } = setup();
+    const ws1 = joined();
     const oldOnMessage = ws1.onmessage;
-    ws1.open();
     ws1.drop();
     vi.advanceTimersByTime(60_000);
     oldOnMessage?.({ data: JSON.stringify({ t: "star", id: "x", x: 0, y: 0, c: 0, by: "o", ts: 1 }) });
     expect(universe.stars.size).toBe(0);
   });
 
-  it("死活監視が切断と判定したら、古い接続を閉じて待たずにつなぎ直す（half-open でも復帰する）", () => {
+  it("再接続の待ち時間は welcome を受けたときに初期値へ戻る（つながるだけでは戻らない）", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5); // ばらつきの倍率を 1 にする
+    const { last, joined } = setup();
+    last().open();
+    last().drop(); // 1 回目: 1500ms
+    vi.advanceTimersByTime(1500);
+    expect(FakeWebSocket.all).toHaveLength(2);
+    last().open(); // つながったが welcome の前に切れた
+    last().drop(); // 2 回目: 2400ms（戻っていない）
+    vi.advanceTimersByTime(1500);
+    expect(FakeWebSocket.all).toHaveLength(2);
+    vi.advanceTimersByTime(900);
+    expect(FakeWebSocket.all).toHaveLength(3);
+    joined().drop(); // welcome まで受けたので初期値に戻る
+    vi.advanceTimersByTime(1500);
+    expect(FakeWebSocket.all).toHaveLength(4);
+  });
+
+  it("サーバーが 1008 で切ったら、次の再接続まで 30 秒以上待つ", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { joined } = setup();
+    joined().drop(1008);
+    vi.advanceTimersByTime(29_999);
+    expect(FakeWebSocket.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWebSocket.all).toHaveLength(2);
+  });
+
+  it("1008 の待ちにもばらつきがある（一斉に戻らない）", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    const { joined } = setup();
+    joined().drop(1008);
+    vi.advanceTimersByTime(30_000);
+    expect(FakeWebSocket.all).toHaveLength(1);
+    vi.advanceTimersByTime(15_000); // 30 秒 × 1〜1.5
+    expect(FakeWebSocket.all).toHaveLength(2);
+  });
+
+  it("CONNECTING のまま 10 秒たったら、閉じてつなぎ直す", () => {
+    const { last } = setup();
+    const ws1 = last(); // onopen が来ない
+    vi.advanceTimersByTime(9_999);
+    expect(ws1.closed).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(ws1.closed).toBe(true);
+    expect(ws1.onclose).toBeNull();
+    vi.advanceTimersByTime(3000);
+    expect(FakeWebSocket.all).toHaveLength(2);
+    expect(last().closed).toBe(false);
+  });
+
+  it("つながっても 10 秒以内に welcome が来なければ、つなぎ直す", () => {
     const { last } = setup();
     const ws1 = last();
     ws1.open();
-    vi.advanceTimersByTime(25_000);
-    expect(ws1.sent).toContain("ping");
-    vi.advanceTimersByTime(50_000); // 何も届かないまま 70 秒以上
+    vi.advanceTimersByTime(10_000);
+    expect(ws1.closed).toBe(true);
+    vi.advanceTimersByTime(3000);
+    expect(FakeWebSocket.all).toHaveLength(2);
+  });
+
+  it("welcome が来たら接続タイムアウトは働かない", () => {
+    const { joined } = setup();
+    const ws1 = joined();
+    vi.advanceTimersByTime(60_000);
+    expect(ws1.closed).toBe(false);
+    expect(FakeWebSocket.all).toHaveLength(1);
+  });
+
+  it("ping は 10 秒ごと。pong が返っている間は切らない", () => {
+    const { joined } = setup();
+    const ws1 = joined();
+    vi.advanceTimersByTime(10_000);
+    expect(ws1.sent.filter((s) => s === "ping")).toHaveLength(1);
+    vi.advanceTimersByTime(110_000);
+    expect(ws1.sent.filter((s) => s === "ping")).toHaveLength(12);
+    expect(ws1.closed).toBe(false);
+  });
+
+  it("ping に 2 回続けて答えが無ければ（約 25 秒）、古い接続を閉じて待たずにつなぎ直す（half-open でも復帰する）", () => {
+    const { joined } = setup();
+    const ws1 = joined();
+    ws1.autoPong = false;
+    vi.advanceTimersByTime(20_000);
+    expect(ws1.sent.filter((s) => s === "ping")).toHaveLength(2);
+    expect(ws1.closed).toBe(false);
+    vi.advanceTimersByTime(5_000);
     expect(ws1.closed).toBe(true);
     expect(ws1.onclose).toBeNull(); // ハンドラは外してある
     expect(FakeWebSocket.all).toHaveLength(2);
+    joined();
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.all).toHaveLength(2); // 予約された再接続が後から重ならない
   });
 
   it("隠れて 30 秒で切断し、戻るまでつながない。戻ったら 1 本だけつなぐ", () => {
-    const { last } = setup();
-    const ws1 = last();
-    ws1.open();
+    const { joined } = setup();
+    const ws1 = joined();
     doc.setHidden(true);
     vi.advanceTimersByTime(30_000);
     expect(ws1.closed).toBe(true);
@@ -193,14 +279,13 @@ describe("Network", () => {
     doc.setHidden(false);
     expect(FakeWebSocket.all).toHaveLength(2);
     doc.setHidden(false); // 表示の通知が重なっても増えない
-    vi.advanceTimersByTime(60_000);
-    expect(FakeWebSocket.all).toHaveLength(2);
+    vi.advanceTimersByTime(5_000); // 接続タイムアウト（10 秒）の前。再接続の待ちに当たらない時点で数える
+    expect(FakeWebSocket.all.filter((w) => !w.closed)).toHaveLength(1);
   });
 
   it("再接続を待っている間に隠れて切断 → 戻ったときも二重につながない", () => {
-    const { last } = setup();
-    const ws1 = last();
-    ws1.open();
+    const { joined } = setup();
+    const ws1 = joined();
     ws1.drop(); // 再接続を予約
     doc.setHidden(true);
     vi.advanceTimersByTime(30_000); // この間に予約がつなぎ直す場合もある
@@ -208,15 +293,14 @@ describe("Network", () => {
     vi.advanceTimersByTime(10 * 60_000);
     expect(FakeWebSocket.all).toHaveLength(n); // 隠れて切ったあとはつながない
     doc.setHidden(false);
-    vi.advanceTimersByTime(60_000);
-    expect(FakeWebSocket.all).toHaveLength(n + 1);
+    vi.advanceTimersByTime(5_000); // 接続タイムアウト（10 秒）の前。再接続の待ちに当たらない時点で数える
+    expect(FakeWebSocket.all.length).toBeGreaterThan(n);
     expect(FakeWebSocket.all.filter((w) => !w.closed)).toHaveLength(1);
   });
 
   it("隠れてすぐ戻ったら切断しない", () => {
-    const { last } = setup();
-    const ws1 = last();
-    ws1.open();
+    const { joined } = setup();
+    const ws1 = joined();
     doc.setHidden(true);
     vi.advanceTimersByTime(10_000);
     doc.setHidden(false);
@@ -255,5 +339,26 @@ describe("Network", () => {
     camera.pan(200, 0);
     net.tick(1_000);
     expect(ws.messages().filter((m) => m.t === "p")).toHaveLength(2);
+  });
+
+  it("位置を送る間隔は、サーバーの指示（1 人のときの 1000ms など）をそのまま使う。下限は 100ms", () => {
+    const { net, joined, player } = setup();
+    const ws = joined();
+    const count = () => ws.messages().filter((m) => m.t === "p").length;
+    const moveFor = (from: number, ms: number) => {
+      for (let t = from; t < from + ms; t += 50) {
+        player.target = { x: t / 1e5, y: 0 };
+        player.x = t / 1e5;
+        net.tick(t);
+      }
+    };
+    ws.receive({ t: "rate", sendMs: 1000 });
+    const before = count();
+    moveFor(1000, 3000); // t = 1000, 2000, 3000 の 3 回
+    expect(count() - before).toBe(3);
+    net.setSendInterval(30);
+    const mid = count();
+    moveFor(10_000, 1000); // 下限 100ms で 10 回
+    expect(count() - mid).toBe(10);
   });
 });

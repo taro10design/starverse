@@ -92,12 +92,12 @@ describe("createTools", () => {
 });
 
 describe("star ツール", () => {
-  it("空を押すと星を置き、離すと履歴が1件。undo は幽霊を残さず消し、redo は同じ id で戻す", () => {
+  it("空を押して離すと星を置き、履歴が1件。undo は幽霊を残さず消し、redo は同じ id で戻す", () => {
     const { tools, universe, history, pushOp, at } = setup();
     tools.star.down(at(300, 300));
+    tools.star.up(at(300, 300), true);
     expect(universe.stars.size).toBe(1);
     const id = [...universe.stars.keys()][0];
-    tools.star.up(at(300, 300), true);
     expect(pushOp).toHaveBeenCalledTimes(1);
     history.undo();
     expect(universe.stars.size).toBe(0);
@@ -126,9 +126,9 @@ describe("star ツール", () => {
     const { tools, universe, history, pushOp, at, mine } = setup();
     const s = mine(400, 400);
     tools.star.down(at(402, 400));
+    tools.star.up(at(402, 400), true);
     expect(universe.stars.has(s.id)).toBe(false);
     expect(universe.ghosts.has(s.id)).toBe(true);
-    tools.star.up(at(402, 400), true);
     expect(pushOp).toHaveBeenCalledTimes(1);
     history.undo();
     expect(universe.stars.has(s.id)).toBe(true);
@@ -201,6 +201,56 @@ describe("star ツール", () => {
     expect(universe.stars.has(m.id)).toBe(true);
     expect(sent).toEqual([]);
     expect(pushOp).not.toHaveBeenCalled();
+  });
+
+  it("押した直後は置かず（ピンチになるかもしれない）、120ms 押し続けたら置く", () => {
+    vi.useFakeTimers();
+    try {
+      const { tools, universe, at } = setup();
+      const p = at(300, 300);
+      tools.star.down(p);
+      vi.advanceTimersByTime(119);
+      expect(universe.stars.size).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect([...universe.stars.values()]).toMatchObject([{ x: p.wx, y: p.wy }]);
+      tools.star.up(p, true); // 離しても二重には置かない
+      expect(universe.stars.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("置く前に cancel（2 本目の指でピンチ）されたら、自分の星の上でも空でも何もしない", () => {
+    vi.useFakeTimers();
+    try {
+      const { tools, universe, sent, pushOp, at, mine } = setup();
+      const s = mine(400, 400);
+      sent.length = 0;
+      tools.star.down(at(300, 300));
+      tools.star.cancel();
+      tools.star.down(at(400, 400));
+      tools.star.cancel();
+      vi.advanceTimersByTime(1000);
+      tools.star.up(at(300, 300), true);
+      expect([...universe.stars.keys()]).toEqual([s.id]);
+      expect(sent).toEqual([]);
+      expect(pushOp).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("押してから 10px より動いたら、押した所に置いてからなぞりを続ける", () => {
+    const { tools, universe, at } = setup();
+    const p0 = at(100, 100);
+    tools.star.down(p0);
+    tools.star.move(at(105, 100), true);
+    expect(universe.stars.size).toBe(0);
+    tools.star.move(at(112, 100), true);
+    const xs = [...universe.stars.values()].map((s) => s.x);
+    expect(xs[0]).toBe(p0.wx);
+    expect(universe.stars.size).toBe(2);
+    tools.star.up(at(112, 100), false);
   });
 
   it("cancel で途中のバッチを確定し、その後のなぞりでは置かない", () => {
@@ -382,6 +432,18 @@ describe("ghost ツール", () => {
     history.undo();
     expect(universe.ghosts.size).toBe(2);
     history.redo();
+    expect(universe.ghosts.size).toBe(0);
+  });
+
+  it("幽霊を忘れる操作は自分の画面だけなので、履歴はローカル（切断中でも undo / redo できる）", () => {
+    const { tools, universe, history, at, mine, online } = setup();
+    universe.deleteStar(mine(100, 100));
+    online.editable = false;
+    drag(tools.ghost, [at(100, 100)]);
+    expect(universe.ghosts.size).toBe(0);
+    history.undo(false); // サーバーへ送る操作は許さない
+    expect(universe.ghosts.size).toBe(1);
+    history.redo(false);
     expect(universe.ghosts.size).toBe(0);
   });
 

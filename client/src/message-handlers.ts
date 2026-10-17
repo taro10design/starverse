@@ -11,23 +11,14 @@ type Handler<K extends ServerMessageType> = (m: Extract<ServerMessage, { t: K }>
 
 export const serverHandlers: { [K in ServerMessageType]: Handler<K> } = {
   // 接続したときの空の全体。再接続の前の古い状態が残らないよう、星・線・他の人は置き換える。
-  // 幽霊は自分の画面だけの記憶なので残す
+  // 幽霊は自分の画面だけの記憶なので残す。黙って消えた自分の星は幽霊にする（Universe.replaceSky）
   welcome(m, u, net) {
+    u.replaceSky(m.stars, m.links); // 前の空の自分の星は、前の持ち主 ID で判定する
     u.myId = m.id;
     u.ownerId = m.me;
     net.setSendInterval(m.sendMs);
     u.peers.clear();
-    u.stars.clear();
-    u.links.clear();
     for (const d of m.dots) u.setPeer(d.id, d.x, d.y, d.c);
-    let ghostsChanged = false;
-    for (const s of m.stars) {
-      u.stars.set(s.id, s);
-      if (u.ghosts.delete(s.id)) ghostsChanged = true; // 生きてるなら幽霊は要らない
-    }
-    if (ghostsChanged) u.saveGhosts();
-    for (const l of m.links) u.links.set(l.id, l);
-    u.pairsDirty = true;
     net.markWelcomed();
   },
 

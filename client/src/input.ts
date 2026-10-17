@@ -189,14 +189,18 @@ export class Input {
     this.current.up(this.pointerInfo(e), tap); // tap でなくても呼ぶ（ドラッグ中の操作を確定する）
   }
 
+  // 追っていない指（キャンバスの外で始まった・片付け済み）の中断では、ツールの操作を止めない
   handlePointerCancel(e: PointerEvent) {
-    this.releasePointer(e.pointerId);
+    if (this.isTracked(e.pointerId)) this.releasePointer(e.pointerId);
   }
 
   // キャプチャが外れた。普通に離したあと（pointerup で片付け済み）なら何もしない
   handleLostCapture(e: PointerEvent) {
-    const known = this.pointers.has(e.pointerId) || this.panning?.id === e.pointerId;
-    if (known) this.releasePointer(e.pointerId);
+    if (this.isTracked(e.pointerId)) this.releasePointer(e.pointerId);
+  }
+
+  private isTracked(id: number): boolean {
+    return this.pointers.has(id) || this.panning?.id === id;
   }
 
   // ウィンドウから離れた。押していた指・キーは離したことにする（離した通知が届かないため）

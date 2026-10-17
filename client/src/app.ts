@@ -58,12 +58,12 @@ export class App {
     return SOLO || this.network.ready;
   }
 
-  // アンドゥ / リドゥもサーバーへ送る操作なので、切れている間はしない
+  // アンドゥ / リドゥの多くはサーバーへ送る操作なので、切れている間はローカルだけの操作（幽霊）に限る
   undo() {
-    if (this.canEdit()) this.history.undo();
+    this.history.undo(this.canEdit());
   }
   redo() {
-    if (this.canEdit()) this.history.redo();
+    this.history.redo(this.canEdit());
   }
 
   // 自分の光を中心に、倍率も初期値へ戻す

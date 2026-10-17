@@ -6,6 +6,8 @@ import type { StarData, LinkData, ClientMessage } from "../../shared/protocol";
 import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER, UID_PATTERN } from "../../shared/limits";
 
 const PEER_STALE_MS = 30_000; // これだけ位置が届かなかった人は、いなくなったものとして消す
+const REVIVED_TTL_MS = 30_000; // 復活で消した幽霊を、サーバーに断られたときのために覚えておく時間
+const KEY_STORAGE = "uchu-key"; // 持ち主の鍵の保存先
 
 // ---------------------------------------------------------------------------
 // Universe — 星・線・幽霊・他人・波紋の状態と生態系ルール
@@ -58,6 +60,8 @@ export class Universe {
   pairsDirty = true;
   pairList: Pair[] = [];
   private saveTimer = 0;
+  // 復活（placeStar に ghost を渡した）で消した幽霊。サーバーに断られたら戻す（REVIVED_TTL_MS で期限切れ）
+  private readonly revived = new Map<string, { ghost: Ghost; at: number }>();
 
   constructor(
     private solo: boolean,
@@ -69,13 +73,14 @@ export class Universe {
   }
 
   // このブラウザ固有の持ち主の鍵。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）。
-  // 鍵はアドレスバーに残すと画面共有や履歴から漏れるので、保存したら URL から消す
+  // 鍵はアドレスバーに残すと画面共有や履歴から漏れるので、保存したら URL から消す。
+  // 旧プロトコルでは鍵（uchu-uid）が星の by として全員に配信されていたので、それは読まずに作り直す
   static loadUid(): string {
     const params = new URLSearchParams(location.search);
     const fromUrl = params.get("key");
-    let uid = fromUrl ?? storage.get("uchu-uid");
+    let uid = fromUrl ?? storage.get(KEY_STORAGE);
     if (!uid || !UID_PATTERN.test(uid)) uid = crypto.randomUUID();
-    storage.set("uchu-uid", uid);
+    storage.set(KEY_STORAGE, uid);
     if (fromUrl !== null) {
       // URLSearchParams.toString() は `?solo` を `?solo=` に変えるので、key の部分だけを文字列から除く
       const rest = location.search
@@ -131,11 +136,21 @@ export class Universe {
       ? { id: ghost.id, x: ghost.x, y: ghost.y, c: ghost.c, by, ts: Date.now() }
       : { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: color, by, ts: Date.now() };
     this.stars.set(s.id, s);
-    if (this.ghosts.delete(s.id)) this.saveGhosts(); // 生きてるなら幽霊は要らない
+    const g = this.ghosts.get(s.id);
+    if (g) {
+      // 生きてるなら幽霊は要らない。ただしサーバーに断られたら戻すので覚えておく
+      this.sweepRevived();
+      this.revived.set(s.id, { ghost: g, at: Date.now() });
+      this.ghosts.delete(s.id);
+      this.saveGhosts();
+    }
     this.pairsDirty = true;
     this.saveSolo();
     this.send({ t: "star", id: s.id, x: s.x, y: s.y, c: s.c });
     return s;
+  }
+  private sweepRevived(now = Date.now()) {
+    for (const [id, r] of this.revived) if (now - r.at > REVIVED_TTL_MS) this.revived.delete(id);
   }
   deleteStar(s: Star, noGhost?: boolean) {
     if (this.isMine(s) && !noGhost) {
@@ -148,12 +163,50 @@ export class Universe {
     this.saveSolo();
     this.send({ t: "unstar", id: s.id });
   }
-  // サーバーが断った星を、自分の画面からだけ取り消す（unstar は送らない。幽霊にもしない）
+  // サーバーが断った星を、自分の画面からだけ取り消す（unstar は送らない）。
+  // - 同じ id の星が自分のものでなければ（id の衝突など）、その星には触らない
+  // - 幽霊からの復活だったなら（期限内）、幽霊に戻す
+  // - そうでなければ、同じ id の幽霊も消す（置いてすぐ消した星。サーバーには最初から無い）
   rollbackStar(id: string) {
-    if (!this.stars.delete(id)) return;
-    this.dropLinksTouching(id);
+    const s = this.stars.get(id);
+    if (s && this.isMine(s)) {
+      this.stars.delete(id);
+      this.dropLinksTouching(id);
+      this.pairsDirty = true;
+      this.saveSolo();
+    }
+    const now = Date.now();
+    const r = this.revived.get(id);
+    this.revived.delete(id);
+    if (r && now - r.at <= REVIVED_TTL_MS) {
+      this.ghosts.set(id, r.ghost);
+      this.saveGhosts();
+    } else if (this.ghosts.delete(id)) {
+      this.saveGhosts();
+    }
+  }
+
+  // 接続したときの空の全体（welcome）で、星と線を置き換える。
+  // 前の空にあって新しい空に無い自分の星（寿命内）は、他人に消された・別の空に移ったので幽霊にする。
+  // 新しい空で生きている星の幽霊は要らない
+  replaceSky(stars: StarData[], links: LinkData[]) {
+    const now = Date.now();
+    const alive = new Set(stars.map((s) => s.id));
+    let ghostsChanged = false;
+    for (const s of this.stars.values()) {
+      if (alive.has(s.id) || !this.isMine(s) || now - s.ts > ttlFor(s.n || 0)) continue;
+      this.ghosts.set(s.id, { id: s.id, x: s.x, y: s.y, c: s.c, gone: now });
+      ghostsChanged = true;
+    }
+    this.stars.clear();
+    this.links.clear();
+    for (const s of stars) {
+      this.stars.set(s.id, s);
+      if (this.ghosts.delete(s.id)) ghostsChanged = true;
+    }
+    for (const l of links) this.links.set(l.id, l);
+    if (ghostsChanged) this.saveGhosts();
     this.pairsDirty = true;
-    this.saveSolo();
   }
   // 他人の星をタップ＝きらめきを送る。寿命がリセットされる
   admire(s: Star) {
@@ -325,5 +378,6 @@ export class Universe {
       }
     }
     if (gdirty) this.saveGhosts();
+    this.sweepRevived(now);
   }
 }

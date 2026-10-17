@@ -318,7 +318,7 @@ describe("Universe", () => {
     expect(u2.stars.size).toBe(0);
   });
 
-  it("?key= で持ち越した uid は保存したあとアドレスバーから消す", () => {
+  it("?key= で持ち越した鍵は uchu-key に保存したあとアドレスバーから消す", () => {
     store.clear();
     const replaceState = vi.fn();
     vi.stubGlobal("location", { search: "?key=abcdefgh-123&solo", pathname: "/", hash: "#x", hostname: "localhost" });
@@ -326,10 +326,100 @@ describe("Universe", () => {
     try {
       const u = new Universe(true, () => undefined);
       expect(u.uid).toBe("abcdefgh-123");
-      expect(store.get("uchu-uid")).toBe("abcdefgh-123");
+      expect(store.get("uchu-key")).toBe("abcdefgh-123");
+      expect(store.has("uchu-uid")).toBe(false);
       expect(replaceState).toHaveBeenCalledWith(null, "", "/?solo#x");
     } finally {
       vi.stubGlobal("location", { search: "", hostname: "localhost", host: "localhost", port: "" });
     }
+  });
+
+  it("鍵は uchu-key に保存して次回も使う。旧プロトコルで配信された uchu-uid は読まない", () => {
+    store.clear();
+    store.set("uchu-uid", "leaked-old-uid-123");
+    const u1 = new Universe(false, () => undefined);
+    expect(u1.uid).not.toBe("leaked-old-uid-123");
+    expect(store.get("uchu-key")).toBe(u1.uid);
+    expect(store.get("uchu-uid")).toBe("leaked-old-uid-123"); // 古いキーは消さない（無視するだけ）
+    const u2 = new Universe(false, () => undefined);
+    expect(u2.uid).toBe(u1.uid);
+  });
+});
+
+describe("Universe.rollbackStar（サーバーが断った星の取り消し）", () => {
+  it("幽霊から復活した星が断られたら、星を消して幽霊に戻す（unstar は送らない）", () => {
+    const { u, dispatch, sent } = setup();
+    dispatch(welcome());
+    const s = u.placeStar(0.3, 0.3, 2);
+    if (!s) throw new Error("星が置けない");
+    u.deleteStar(s);
+    const g = u.ghosts.get(s.id);
+    if (!g) throw new Error("ghost が無い");
+    u.reviveGhost(g);
+    expect(u.ghosts.has(s.id)).toBe(false);
+    sent.length = 0;
+    dispatch({ t: "reject", kind: "star", id: s.id });
+    expect(u.stars.has(s.id)).toBe(false);
+    expect(u.ghosts.get(s.id)).toMatchObject({ x: g.x, y: g.y, c: g.c });
+    expect(sent).toEqual([]);
+  });
+
+  it("復活から 30 秒より後の reject では幽霊に戻さない（記録は期限切れ）", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      const { u, dispatch } = setup();
+      dispatch(welcome());
+      const s = u.placeStar(0.3, 0.3, 2);
+      if (!s) throw new Error("星が置けない");
+      u.deleteStar(s);
+      const g = u.ghosts.get(s.id);
+      if (!g) throw new Error("ghost が無い");
+      u.reviveGhost(g);
+      vi.setSystemTime(1_031_000);
+      dispatch({ t: "reject", kind: "star", id: s.id });
+      expect(u.stars.has(s.id)).toBe(false);
+      expect(u.ghosts.has(s.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("置いてすぐ消した星が断られたら、残った幽霊も消す（サーバーには最初から無い）", () => {
+    const { u, dispatch } = setup();
+    dispatch(welcome());
+    const s = u.placeStar(0.3, 0.3, 2);
+    if (!s) throw new Error("星が置けない");
+    u.deleteStar(s);
+    expect(u.ghosts.has(s.id)).toBe(true);
+    dispatch({ t: "reject", kind: "star", id: s.id });
+    expect(u.ghosts.has(s.id)).toBe(false);
+  });
+
+  it("同じ id の星が他人のもの（id の衝突）なら、その星は消さない", () => {
+    const { u, dispatch } = setup();
+    dispatch(welcome({ stars: [star("dup", "someone"), star("x", "someone")] }));
+    u.addLink("dup", "x");
+    dispatch({ t: "reject", kind: "star", id: "dup" });
+    expect(u.stars.has("dup")).toBe(true);
+    expect(u.links.size).toBe(1);
+  });
+});
+
+describe("welcome での自分の星", () => {
+  it("前の空にあって新しい空に無い自分の星（寿命内）は幽霊になる。他人の星・寿命切れの星はならない", () => {
+    const { u, dispatch } = setup();
+    dispatch(welcome());
+    const now = Date.now();
+    u.stars.set("mine-alive", { ...star("mine-alive", ME), ts: now });
+    u.stars.set("mine-kept", { ...star("mine-kept", ME), ts: now });
+    u.stars.set("mine-old", { ...star("mine-old", ME), ts: 0 });
+    u.stars.set("theirs", { ...star("theirs", "someone"), ts: now });
+    dispatch(welcome({ stars: [{ ...star("mine-kept", ME), ts: now }] }));
+    expect(u.ghosts.has("mine-alive")).toBe(true);
+    expect(u.ghosts.has("mine-kept")).toBe(false);
+    expect(u.ghosts.has("mine-old")).toBe(false);
+    expect(u.ghosts.has("theirs")).toBe(false);
+    expect(JSON.stringify(store.get("uchu-ghosts"))).toContain("mine-alive"); // 保存もする
   });
 });

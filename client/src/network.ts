@@ -13,14 +13,18 @@ import type { App } from "./app";
 // 接続の状態: 接続はいつも高々 1 本（this.ws）。新しく開く前に、古い接続のハンドラを外して閉じ、
 // 予約済みの再接続も取り消す。古い接続から遅れて届いた通知は ws !== this.ws で無視する。
 // 「隠れて切った」（paused）間は、再接続を予約しない。表示に戻ったら 1 本だけ開く。
+// 再接続の待ち時間は、welcome まで受け取れたときだけ初期値に戻す（開くだけで切られる状態で詰め寄らない）。
 // ---------------------------------------------------------------------------
-const DEFAULT_SEND_MS = 100;
-const PING_MS = 25_000; // 死活監視の ping（サーバーが Durable Object を起こさずに pong を返す）
-const DEAD_AFTER_MS = 70_000; // 何も受け取れない状態がこれだけ続いたら、つなぎ直す
+const DEFAULT_SEND_MS = 100; // 位置を送る間隔の下限（サーバーの指示がこれより短くても守る）
+const PING_MS = 10_000; // 死活監視の ping（サーバーが Durable Object を起こさずに pong を返す）
+const DEAD_AFTER_MS = 25_000; // 何も受け取れない状態がこれだけ続いたら（ping 2 回に答えが無い）、つなぎ直す
 const WATCHDOG_MS = 5000; // 死活監視の確認間隔
+const CONNECT_TIMEOUT_MS = 10_000; // 開いてから welcome までの上限（CONNECTING のまま固まるのを防ぐ）
 const HIDDEN_CLOSE_MS = 30_000; // タブが隠れて、これだけ経ったら切断して空きを返す
 const RETRY_MIN_MS = 1500;
 const RETRY_MAX_MS = 15_000;
+const POLICY_RETRY_MS = 30_000; // サーバーが 1008（ポリシー違反・乱用対策）で切ったときの待ち時間
+const CLOSE_POLICY = 1008;
 const OPEN = 1; // WebSocket.OPEN
 
 // Network が使う App の部分（テストでは最小の偽物を渡す）
@@ -31,6 +35,7 @@ export class Network {
   private welcomed = false; // いまの接続で welcome を受け取ったか
   private retry = RETRY_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   private paused = false; // 隠れていたために切った（表示に戻ったらつなぐ）
@@ -61,9 +66,16 @@ export class Network {
     const ws = new WebSocket(`${scheme}://${WS_HOST}/ws`);
     this.ws = ws;
     this.welcomed = false;
+    this.clearConnectTimer();
+    // onopen も welcome も来ないまま固まったら、閉じて（待ち時間を伸ばしながら）つなぎ直す
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (ws !== this.ws || this.welcomed) return;
+      this.discard();
+      this.scheduleReconnect();
+    }, CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
       if (ws !== this.ws) return;
-      this.retry = RETRY_MIN_MS;
       this.lastRx = Date.now();
       this.send({ t: "hello", uid: this.app.universe.uid }); // 最初に 1 回だけ、持ち主の鍵を名乗る
       this.sendPosition(); // 接続直後は、操作していなくても 1 回送る
@@ -76,11 +88,14 @@ export class Network {
       const m = parseServerMessage(e.data);
       if (m) handleServerMessage(m, this.app.universe, this);
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (ws !== this.ws) return; // 置き換えた古い接続の通知
       this.ws = null;
       this.onDisconnected();
-      if (!this.paused) this.scheduleReconnect();
+      if (this.paused) return;
+      // 乱用対策で切られたなら、しばらく（ばらつきつきで）待つ
+      if (e.code === CLOSE_POLICY) this.scheduleReconnect(POLICY_RETRY_MS * (1 + Math.random() * 0.5));
+      else this.scheduleReconnect();
     };
     ws.onerror = () => {
       if (ws === this.ws) ws.close();
@@ -100,19 +115,22 @@ export class Network {
   private onDisconnected() {
     this.welcomed = false;
     this.stopWatchdog();
+    this.clearConnectTimer();
     this.app.universe.peers.clear();
   }
 
-  // 一斉に再接続して集中しないよう、待ち時間にばらつきを持たせる
-  private scheduleReconnect() {
+  private clearConnectTimer() {
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+  }
+
+  // 一斉に再接続して集中しないよう、待ち時間にばらつきを持たせる。delay を渡すとその時間だけ待つ
+  private scheduleReconnect(delay = this.retry * (0.5 + Math.random())) {
     this.cancelReconnect();
-    this.reconnectTimer = setTimeout(
-      () => {
-        this.reconnectTimer = null;
-        this.open();
-      },
-      this.retry * (0.5 + Math.random()),
-    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.open();
+    }, delay);
     this.retry = Math.min(this.retry * 1.6, RETRY_MAX_MS);
   }
 
@@ -125,12 +143,14 @@ export class Network {
     if (this.ws && this.ws.readyState === OPEN) this.ws.send(JSON.stringify(obj));
   }
 
-  // welcome を受け取った（message-handlers から呼ばれる）
+  // welcome を受け取った（message-handlers から呼ばれる）。ここで初めて「つながった」とみなす
   markWelcomed() {
     this.welcomed = true;
+    this.retry = RETRY_MIN_MS;
+    this.clearConnectTimer();
   }
 
-  // サーバーからの指示で、位置を送る間隔を変える
+  // サーバーからの指示で、位置を送る間隔を変える（1 人のときの 1000ms などもそのまま使う。下限だけ守る）
   setSendInterval(ms: number) {
     this.sendMs = Math.max(DEFAULT_SEND_MS, ms);
   }
@@ -176,7 +196,7 @@ export class Network {
     let sinceLastPing = 0;
     this.watchdog = setInterval(() => {
       if (ws !== this.ws) return;
-      if (Date.now() - this.lastRx > DEAD_AFTER_MS) {
+      if (Date.now() - this.lastRx >= DEAD_AFTER_MS) {
         this.open();
         return;
       }

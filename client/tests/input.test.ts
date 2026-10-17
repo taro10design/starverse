@@ -175,13 +175,12 @@ describe("Input（ポインタ）", () => {
     expect(canvas.setPointerCapture).toHaveBeenCalledWith(2);
   });
 
-  it("2 本目の指でピンチが始まったらツールを cancel し、ピンチ後の up は呼ばない", () => {
+  it("2 本目の指でピンチが始まったらツールを cancel し、ピンチ後の up は呼ばない（1 本目の星も置かない）", () => {
     const cancel = vi.spyOn(mod.StarTool.prototype, "cancel");
     const up = vi.spyOn(mod.StarTool.prototype, "up");
     const { input, universe, pe } = setup();
     input.setTool("star");
     input.handlePointerDown(pe(1, 100, 100));
-    expect(universe.stars.size).toBe(1);
     input.handlePointerDown(pe(2, 300, 100));
     expect(cancel).toHaveBeenCalledTimes(1);
     input.handlePointerMove(pe(1, 60, 100));
@@ -190,12 +189,12 @@ describe("Input（ポインタ）", () => {
     input.handlePointerMove(pe(1, 20, 300)); // 残った指をなぞっても星は置かない
     input.handlePointerUp(pe(1, 20, 300));
     expect(up).not.toHaveBeenCalled();
-    expect(universe.stars.size).toBe(1);
+    expect(universe.stars.size).toBe(0);
     // 全部の指が離れたら、次の操作は普通に効く
     input.handlePointerDown(pe(3, 500, 500));
     input.handlePointerUp(pe(3, 500, 500));
     expect(up).toHaveBeenCalledTimes(1);
-    expect(universe.stars.size).toBe(2);
+    expect(universe.stars.size).toBe(1);
   });
 
   it("lostpointercapture で指を片付けてツールを cancel する（次のクリックがピンチ扱いにならない）", () => {
@@ -206,7 +205,31 @@ describe("Input（ポインタ）", () => {
     input.handleLostCapture(pe(1, 100, 100));
     expect(cancel).toHaveBeenCalledTimes(1);
     input.handlePointerDown(pe(2, 400, 400)); // ピンチなら星は置かれない
-    expect(universe.stars.size).toBe(2);
+    input.handlePointerUp(pe(2, 400, 400));
+    expect(universe.stars.size).toBe(1);
+  });
+
+  it("追っている指の pointercancel ではツールを cancel する", () => {
+    const cancel = vi.spyOn(mod.StarTool.prototype, "cancel");
+    const { input, pe } = setup();
+    input.setTool("star");
+    input.handlePointerDown(pe(1, 100, 100));
+    input.handlePointerCancel(pe(1, 100, 100));
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("追っていない指の pointercancel ではツールを cancel しない", () => {
+    const cancel = vi.spyOn(mod.StarTool.prototype, "cancel");
+    const { input, universe, pe } = setup();
+    input.setTool("star");
+    input.handlePointerDown(pe(1, 100, 100));
+    input.handlePointerCancel(pe(99, 0, 0)); // キャンバスの外のボタンなどで始まった指
+    input.handlePointerCancel(pe(1, 100, 100)); // 片付け済みのあとに重ねて届いた
+    input.handlePointerCancel(pe(1, 100, 100));
+    expect(cancel).toHaveBeenCalledTimes(1);
+    input.handlePointerDown(pe(2, 400, 400));
+    input.handlePointerUp(pe(2, 400, 400));
+    expect(universe.stars.size).toBe(1);
   });
 
   it("普通に離したあとの lostpointercapture では cancel しない", () => {
@@ -232,6 +255,7 @@ describe("Input（ポインタ）", () => {
     expect(app.camera.cx).toBe(cx);
     expect(app.camera.cy).toBe(0.5);
     input.handlePointerDown(pe(2, 400, 400));
-    expect(universe.stars.size).toBe(2);
+    input.handlePointerUp(pe(2, 400, 400));
+    expect(universe.stars.size).toBe(1);
   });
 });

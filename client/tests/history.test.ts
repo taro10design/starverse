@@ -46,6 +46,24 @@ describe("History", () => {
     expect(log[199]).toBe("undo 5");
   });
 
+  it("サーバーへ送れない間（undo(false) / redo(false)）は、ローカルだけの操作しか戻さない", () => {
+    const { h, log, op } = setup();
+    h.pushOp(op("remote"));
+    h.pushOp({ ...op("local"), local: true });
+    h.undo(false);
+    expect(log).toEqual(["undo local"]);
+    h.undo(false); // 次はサーバーへ送る操作なので、しない（順序は崩さない）
+    expect(log).toEqual(["undo local"]);
+    expect(h.canUndo).toBe(true);
+    h.redo(false);
+    expect(log).toEqual(["undo local", "redo local"]);
+    h.undo(false);
+    h.undo(true);
+    expect(log).toEqual(["undo local", "redo local", "undo local", "undo remote"]);
+    h.redo(false); // remote が先頭なのでしない
+    expect(log).toHaveLength(4);
+  });
+
   it("変化のたびにボタン更新のコールバックが呼ばれる", () => {
     const { h, op, changes } = setup();
     h.pushOp(op("a"));

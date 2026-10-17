@@ -38,6 +38,7 @@ export class GhostTool implements Tool {
     this.ctx.history.pushOp({
       undo: () => list.forEach((g) => universe.rememberGhost({ ...g })),
       redo: () => list.forEach((g) => universe.forgetGhost(g)),
+      local: true, // サーバーへは何も送らないので、切断中でも戻せる
     });
   }
 }
