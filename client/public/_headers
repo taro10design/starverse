@@ -1,0 +1,11 @@
+# Cloudflare Pages / Workers Assets が配信時に付けるヘッダ
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss://universe.taroooo0w0.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'
+
+# ファイル名にハッシュが入っているので、長くキャッシュしてよい
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

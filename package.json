@@ -5,20 +5,33 @@
   "scripts": {
     "dev": "vite client",
     "dev:server": "wrangler dev",
-    "prebuild": "node -e \"require('fs').rmSync('client/dist',{recursive:true,force:true})\"",
+    "prebuild": "rimraf client/dist",
     "build": "tsc -b && vite build client",
     "preview": "vite preview client",
     "typecheck": "tsc -b",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
     "loadtest": "node scripts/loadtest.mjs",
+    "e2e": "node scripts/e2e.mjs",
     "deploy": "npm run build && wrangler pages deploy client/dist --project-name uchu",
     "deploy:server": "wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261015.1",
-    "typescript": "^7.0.2",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "rimraf": "^6.1.3",
+    "typescript": "~6.0",
+    "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.4",
     "wrangler": "^4.151.0"
-  }
+  },
+  "license": "MIT"
 }

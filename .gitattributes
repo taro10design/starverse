@@ -1,0 +1,7 @@
+# 改行コードは LF に統一する（Windows / macOS / Linux でdiffが変わらないように）
+* text=auto eol=lf
+
+# バイナリ
+*.png binary
+*.jpg binary
+*.ico binary
