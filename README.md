@@ -59,4 +59,4 @@ npm run build
 
 ## ライセンス
 
-[MIT](LICENSE)
+このリポジトリのコードは [MIT](LICENSE) です。使っているオープンソースの部品のライセンス表記は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)（サイトでは `/THIRD_PARTY_NOTICES.txt`）にあります。依存を変えたら `npm run notices` で更新します（CI が最新かを検査します）。
