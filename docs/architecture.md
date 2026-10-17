@@ -44,7 +44,7 @@ docs/      adr（設計判断）/ specs（仕様）/ qa（実機確認）/ TODO.
 | 1 つの Durable Object の限界 | **満員（300 人）になったら次の空へ振り分け**（最大 8 空）。先頭の `space` は従来の名前のまま | [ADR 0001](adr/0001-rooms-and-sharding.md) |
 | 星の保存のたびに全件をシリアライズ | **1 件 1 キー（`s:<id>` / `l:<id>`）で、変わった分だけ保存** | [ADR 0005](adr/0005-world-as-pure-class.md) |
 | 密集度の計算が O(n²) | **空間ハッシュ**で近傍だけを数える。実行は 1 秒以上あけ、30 秒ごとのアラームでも実行 | [spatial.ts](../server/src/spatial.ts) |
-| 不正な値・連打・他人の星の上書き | **入力検証**（型・範囲・長さ）、**接続ごとのトークンバケット**、他人の星は上書き不可 | [validate.ts](../server/src/validate.ts) / [rate-limit.ts](../server/src/rate-limit.ts) |
+| 不正な値・連打・他人の星の上書き・なりすまし | **入力検証**、**接続ごとのトークンバケット**、他人の星は上書き不可、**持ち主の鍵は秘密にして SHA-256 の ID だけを配信**、同一 IP の接続数の上限 | [validate.ts](../server/src/validate.ts) / [rate-limit.ts](../server/src/rate-limit.ts) |
 | 誰も動かないのにタイマーが回り続ける | 動きが無い間は配信タイマーを止め、Durable Object がハイバネートできるようにする | [room.ts](../server/src/room.ts) |
 | クライアントとサーバーでルールがずれる | メッセージ型と星の寿命ルールを `shared/` の 1 か所に置く。ハンドラ表で処理の書き忘れを型エラーにする | [ADR 0004](adr/0004-shared-protocol-and-handler-tables.md) |
 
@@ -63,7 +63,8 @@ JSON を WebSocket で送受信します。`t` が種別で、通信量を抑え
 
 | クライアント → サーバー | 意味 |
 | --- | --- |
-| `p` | 自分の位置・色・視界。動いたときだけ（動かなくても 5 秒に 1 回）、サーバーが指示した間隔で |
+| `hello` | 接続の最初に 1 回。持ち主の秘密の鍵 `uid`（保存も配信もされない） |
+| `p` | 自分の位置・色・視界。動いたときだけ、サーバーが指示した間隔で |
 | `pulse` | 波紋を出す |
 | `star` / `unstar` | 星を灯す / 消す |
 | `admire` | 星にきらめきを送る（寿命リセット） |
@@ -72,7 +73,8 @@ JSON を WebSocket で送受信します。`t` が種別で、通信量を抑え
 
 | サーバー → クライアント | 意味 |
 | --- | --- |
-| `welcome` | 接続直後に 1 回。自分の id・位置の送信間隔・今いる人・全ての星・全ての線 |
+| `welcome` | `hello` への返事。自分の id・持ち主 ID `me`・位置の送信間隔・今いる人・全ての星・全ての線 |
+| `reject` | 断った `star` / `link`（上限超過・レート制限など）。クライアントは自分の画面から取り消す |
 | `rate` | 空の人数が変わったときの、位置の送信間隔の指示 |
 | `ps` | 他の人の位置のまとめ（`[id, x, y, color]` の配列） |
 | `pulse` | 視界内で起きた波紋 |
@@ -89,7 +91,7 @@ JSON を WebSocket で送受信します。`t` が種別で、通信量を抑え
 - **接続先の切り替え**: `workers.dev` と `wrangler dev`（8787）では同一オリジン、`?ws=localhost:8787` で手元の Worker に上書き可能（`uid` の流出を避けるため localhost のみ許可）、それ以外は本番の Worker（[constants.ts](../client/src/constants.ts) の `WS_HOST`）
 - **ツール（Strategy）**: 操作はツールごとのクラス（`client/src/tools/`）。ツールは `ToolContext`（必要なものだけ）を受け取り、ドラッグ中の連続操作は自分で 1 つの履歴にまとめる
 - **ストレージ**: `localStorage` の失敗は [storage.ts](../client/src/storage.ts) の 1 か所だけで握りつぶす
-- **観測**: `GET /stats` が空ごとの接続数・星の数・送信間隔を返す（10 秒キャッシュ）
+- **観測**: `GET /stats`（`x-stats-token` ヘッダが `STATS_TOKEN` と一致したときだけ。それ以外は 404）が空ごとの接続数・星の数・送信間隔を返す
 
 ## 負荷テスト
 

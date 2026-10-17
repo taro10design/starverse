@@ -17,9 +17,11 @@
 
 | 向き | t | 内容 |
 | --- | --- | --- |
+| C→S | `hello` | 接続の最初に 1 回。持ち主の秘密の鍵 `uid`。サーバーはこれを SHA-256 にして持ち主 ID にする。hello の前のメッセージは無視される。10 秒以内に来ない、または形式が合わないと 1008 で切断 |
 | C→S | `p` | 位置 x, y・色 c・視界 v（任意） |
-| C→S | `pulse` / `star` / `unstar` / `admire` / `link` / `unlink` | 波紋・星の配置と削除・きらめき・線の作成と削除（star / unstar / link / unlink は uid 任意） |
-| S→C | `welcome` | 自分の id・送信間隔 sendMs・他人の点 dots・星・線 |
+| C→S | `pulse` / `star` / `unstar` / `admire` / `link` / `unlink` | 波紋・星の配置（色 c を含む）と削除・きらめき・線の作成と削除。uid は載せない |
+| S→C | `welcome` | hello への返事。自分の id と持ち主 ID `me`・送信間隔 sendMs・他人の点 dots・星・線 |
+| S→C | `reject` | 上限超過・レート制限などで断った star / link。クライアントは自分の画面から取り消す |
 | S→C | `rate` | 人数が変わったときの送信間隔の指示 |
 | S→C | `ps` | 他人の位置 `[id, x, y, c]` の配列 |
 | S→C | `pulse` / `star` / `unstar` / `admire` / `link` / `unlink` / `leave` | 他人の操作の反映と退出 |
@@ -31,9 +33,9 @@
 ### 送信間隔・レート・容量（server/src/config.ts）
 
 - 送信間隔 `sendMsFor(n)` = n 人 × 1000 / 500（`inboundBudgetPerSec`）ms を 50ms 刻みに切り上げ、100ms（`sendMsMin`）〜1000ms（`sendMsMax`）に収める。50 人まで 100ms、100 人で 200ms、300 人で 600ms。
-- クライアントはこの指示に従う（`welcome.sendMs` と `rate`）。動いたときだけ送り、動かなくても 5 秒に 1 回は送る。
+- クライアントはこの指示に従う（`welcome.sendMs` と `rate`）。動いたときだけ送る（動かない間は何も送らない。死活監視は ping に任せる）。
 - 配信の tick は 100 人まで 100ms、200 人まで 150ms、それ以上は 250ms。動きが 30 tick 無ければタイマーを止める（ハイバネート可能にする）。
-- レート制限はトークンバケット。容量 200、毎秒 40 回復。コストは `p`=1、`pulse`=2、`star`=2、`unstar`=1、`admire`=2、`link`=2、`unlink`=1。連続 200 回あふれると 1008 で切断する。
+- レート制限はトークンバケット。容量 200、毎秒 40 回復。コストは `p`=1、`pulse`=4、`star`=2、`unstar`=1、`admire`=2、`link`=2、`unlink`=1。連続 200 回あふれると 1008 で切断する。
 - 容量は 1 つの空に 300 人（`roomCapacity`）、空は最大 8 つ（`maxRooms`）。空の名前は `space`, `space-2`, ...
 
 ## 受け入れ条件
