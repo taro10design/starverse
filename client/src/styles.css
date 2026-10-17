@@ -46,7 +46,10 @@ body {
   box-shadow: 0 0 8px var(--g);
   opacity: 0.35;
   cursor: pointer;
-  transition: opacity 0.25s, box-shadow 0.25s, transform 0.25s;
+  transition:
+    opacity 0.25s,
+    box-shadow 0.25s,
+    transform 0.25s;
 }
 
 .swatch:hover {
@@ -55,7 +58,9 @@ body {
 
 .swatch.sel {
   opacity: 1;
-  box-shadow: 0 0 14px var(--g), 0 0 0 1.5px var(--c);
+  box-shadow:
+    0 0 14px var(--g),
+    0 0 0 1.5px var(--c);
   transform: scale(1.15);
 }
 
@@ -80,7 +85,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
+  transition:
+    background 0.25s,
+    color 0.25s,
+    box-shadow 0.25s;
 }
 
 .tool svg {
@@ -187,7 +195,9 @@ body {
   opacity: 0;
   transform: translateY(6px);
   pointer-events: none;
-  transition: opacity 0.25s, transform 0.25s;
+  transition:
+    opacity 0.25s,
+    transform 0.25s;
 }
 
 #help.open {

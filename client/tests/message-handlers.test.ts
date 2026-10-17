@@ -125,8 +125,8 @@ describe("Universe", () => {
     expect(sent[0]).toMatchObject({ t: "star", id: s.id, uid: u.uid });
     u.deleteStar(s);
     const ghost = u.ghosts.get(s.id);
-    expect(ghost).toBeDefined();
-    const revived = u.reviveGhost(ghost!);
+    if (!ghost) throw new Error("ghost が無い");
+    const revived = u.reviveGhost(ghost);
     expect(revived.id).toBe(s.id);
     expect(u.ghosts.has(s.id)).toBe(false);
   });

@@ -1,5 +1,6 @@
 import { PALETTES, autopilot } from "./constants";
 import type { Palette } from "./constants";
+import { storage } from "./storage";
 
 // ---------------------------------------------------------------------------
 // Player — 自分の光。バネでターゲットへ向かう
@@ -13,18 +14,14 @@ export class Player {
   colorIndex = 0;
 
   constructor() {
-    try {
-      this.colorIndex = Math.min(+(localStorage.getItem("uchu-color") || 0), PALETTES.length - 1);
-    } catch {}
+    this.colorIndex = Math.min(Number(storage.get("uchu-color") ?? 0) || 0, PALETTES.length - 1);
   }
   get palette(): Palette {
     return PALETTES[this.colorIndex];
   }
   setColor(i: number) {
     this.colorIndex = i;
-    try {
-      localStorage.setItem("uchu-color", String(i));
-    } catch {}
+    storage.set("uchu-color", String(i));
   }
   update(dt: number, t: number) {
     const tgt = this.target || autopilot(t);

@@ -1,4 +1,5 @@
 import { PALETTES, CROWD_R, GHOST_TTL, ttlFor } from "./constants";
+import { storage } from "./storage";
 import type { RGB } from "./constants";
 import type { StarData, LinkData, ClientMessage } from "../../shared/protocol";
 
@@ -40,7 +41,7 @@ export interface Pair {
 
 export class Universe {
   readonly uid = Universe.loadUid();
-  myId: string | null;
+  myId: string | null = null; // サーバーが割り当てた接続 id（他の人の位置の中から自分を除くのに使う）
   readonly stars = new Map<string, Star>();
   readonly links = new Map<string, LinkData>(); // 誰かが手で引いた線
   readonly ghosts = new Map<string, Ghost>();
@@ -54,58 +55,43 @@ export class Universe {
     private solo: boolean,
     private send: (msg: ClientMessage) => void,
   ) {
-    this.myId = solo ? "me" : null;
     this.loadGhosts();
     if (solo) this.loadSolo();
   }
 
   // このブラウザ固有の持ち主ID。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）
   static loadUid(): string {
-    let uid: string | null = null;
-    try {
-      uid = new URLSearchParams(location.search).get("key") || localStorage.getItem("uchu-uid");
-    } catch {}
+    let uid = new URLSearchParams(location.search).get("key") ?? storage.get("uchu-uid");
     if (!uid || !/^[\w-]{8,64}$/.test(uid)) uid = crypto.randomUUID();
-    try {
-      localStorage.setItem("uchu-uid", uid);
-    } catch {}
+    storage.set("uchu-uid", uid);
     return uid;
   }
 
   isMine(s: { by: string }): boolean {
-    return s.by === this.uid || s.by === "me" || s.by === this.myId;
+    return s.by === this.uid;
   }
 
   // --- 永続化 ---
   loadGhosts() {
-    try {
-      for (const g of JSON.parse(localStorage.getItem("uchu-ghosts") || "[]") as Ghost[]) {
-        if (Date.now() - g.gone < GHOST_TTL) this.ghosts.set(g.id, g);
-      }
-    } catch {}
+    for (const g of storage.getJSON<Ghost[]>("uchu-ghosts") ?? []) {
+      if (Date.now() - g.gone < GHOST_TTL) this.ghosts.set(g.id, g);
+    }
   }
   saveGhosts() {
-    try {
-      localStorage.setItem("uchu-ghosts", JSON.stringify([...this.ghosts.values()].slice(-128)));
-    } catch {}
+    storage.setJSON("uchu-ghosts", [...this.ghosts.values()].slice(-128));
   }
-  // ソロモード：自分の星はlocalStorageに残る（消えない個人の空）
+  // ソロモード：自分の星は localStorage に残る（消えない個人の空）
   loadSolo() {
-    try {
-      const saved = JSON.parse(localStorage.getItem("uchu-solo") || "null");
-      const arr = saved ? saved.stars : JSON.parse(localStorage.getItem("uchu-solo-stars") || "[]");
-      for (const s of arr || []) this.stars.set(s.id, s);
-      for (const l of (saved && saved.links) || []) this.links.set(l.id, l);
-      this.pairsDirty = true;
-    } catch {}
+    const saved = storage.getJSON<{ stars?: Star[]; links?: LinkData[] }>("uchu-solo");
+    for (const s of saved?.stars ?? []) this.stars.set(s.id, s);
+    for (const l of saved?.links ?? []) this.links.set(l.id, l);
+    this.pairsDirty = true;
   }
   saveSolo() {
     if (!this.solo) return;
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
-      try {
-        localStorage.setItem("uchu-solo", JSON.stringify({ stars: [...this.stars.values()], links: [...this.links.values()] }));
-      } catch {}
+      storage.setJSON("uchu-solo", { stars: [...this.stars.values()], links: [...this.links.values()] });
     }, 400); // 連続配置中は書き込みをまとめる
   }
 
@@ -139,11 +125,17 @@ export class Universe {
   }
   // 最寄りの星（ワールド座標、半径はワールド単位）
   getStarAt(wx: number, wy: number, radius: number, exclude: string | null = null): Star | null {
-    let best: Star | null = null, bd = radius * radius;
+    let best: Star | null = null,
+      bd = radius * radius;
     for (const s of this.stars.values()) {
       if (s.id === exclude) continue;
-      const dx = s.x - wx, dy = s.y - wy, d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; best = s; }
+      const dx = s.x - wx,
+        dy = s.y - wy,
+        d = dx * dx + dy * dy;
+      if (d < bd) {
+        bd = d;
+        best = s;
+      }
     }
     return best;
   }
@@ -176,10 +168,16 @@ export class Universe {
 
   // --- 幽霊 ---
   getGhostAt(wx: number, wy: number, radius: number): Ghost | null {
-    let best: Ghost | null = null, bd = radius * radius;
+    let best: Ghost | null = null,
+      bd = radius * radius;
     for (const g of this.ghosts.values()) {
-      const dx = g.x - wx, dy = g.y - wy, d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; best = g; }
+      const dx = g.x - wx,
+        dy = g.y - wy,
+        d = dx * dx + dy * dy;
+      if (d < bd) {
+        bd = d;
+        best = g;
+      }
     }
     return best;
   }
@@ -190,6 +188,11 @@ export class Universe {
   }
   forgetGhost(g: Ghost) {
     this.ghosts.delete(g.id);
+    this.saveGhosts();
+  }
+  // 忘れた幽霊を思い出す（アンドゥ用）
+  rememberGhost(g: Ghost) {
+    this.ghosts.set(g.id, g);
     this.saveGhosts();
   }
   forgetAllGhosts() {
@@ -240,7 +243,8 @@ export class Universe {
     const now = Date.now();
     let dirty = false;
     for (const [id, s] of this.stars) {
-      if (!this.solo && now - s.ts > ttlFor(s.n || 0)) { // ひとりの宇宙では星は消えない
+      if (!this.solo && now - s.ts > ttlFor(s.n || 0)) {
+        // ひとりの宇宙では星は消えない
         this.stars.delete(id);
         this.dropLinksTouching(id);
         dirty = true;

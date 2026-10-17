@@ -75,7 +75,8 @@ export class Network {
     const { player, camera } = this.app;
     const [x0, y0] = camera.screenToWorld(0, 0);
     const [x1, y1] = camera.screenToWorld(camera.W, camera.H);
-    const x = round(player.x, 4), y = round(player.y, 4);
+    const x = round(player.x, 4),
+      y = round(player.y, 4);
     const v: View = [round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)];
     this.lastSent = { x, y, v };
     this.send({ t: "p", x, y, c: player.colorIndex, v });
@@ -89,7 +90,12 @@ export class Network {
     const { player, camera } = this.app;
     const last = this.lastSent;
     const [vx0, vy0] = camera.screenToWorld(0, 0);
-    const moved = !last || Math.abs(player.x - last.x) > 1e-4 || Math.abs(player.y - last.y) > 1e-4 || Math.abs(vx0 - last.v[0]) > 1e-3 || Math.abs(vy0 - last.v[1]) > 1e-3;
+    const moved =
+      !last ||
+      Math.abs(player.x - last.x) > 1e-4 ||
+      Math.abs(player.y - last.y) > 1e-4 ||
+      Math.abs(vx0 - last.v[0]) > 1e-3 ||
+      Math.abs(vy0 - last.v[1]) > 1e-3;
     if (moved || t - this.lastForced > HEARTBEAT_MS) {
       this.lastForced = t;
       this.sendPosition();

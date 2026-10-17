@@ -1,9 +1,9 @@
-import { HIT_RADIUS } from "./constants";
 import type { ToolName } from "./constants";
-import { snap, mid, dist } from "./util";
+import { mid, dist } from "./util";
 import type { Point } from "./util";
 import type { App } from "./app";
-import type { Star, Ghost } from "./universe";
+import { createTools, HitTester } from "./tools";
+import type { Tool, PointerInfo, LinkPreview } from "./tools";
 
 interface PinchState {
   d0: number;
@@ -11,16 +11,16 @@ interface PinchState {
   wx: number;
   wy: number;
 }
-type StarSnap = ReturnType<typeof snap>;
 
 // ---------------------------------------------------------------------------
 // Input — ポインタ / タッチ / キーボード
 // ---------------------------------------------------------------------------
+// ポインタの振り分け（ピンチ・パン・ミニマップ・キー・ホイール）だけを持ち、
+// ツールごとの操作は tools/ の各クラスに任せる
 
 export class Input {
-  tool: ToolName = "move";
-  linking: Star | null = null; // 線を引き始めた星
-  linkTip: [number, number] | null = null; // 引き途中の先端（ワールド座標）
+  private tools: Record<ToolName, Tool>;
+  private current: Tool;
 
   private pointers = new Map<number, Point>();
   private pinch: PinchState | null = null;
@@ -28,20 +28,33 @@ export class Input {
   private downX = 0;
   private downY = 0;
   private downTarget: EventTarget | null = null;
-  private lastPlaced: [number, number] | null = null;
-  private erasing = false;
-  private ghosting = false;
-  // ドラッグ中の連続操作を一つの履歴として束ねる
-  private placeBatch: StarSnap[] | null = null;
-  private eraseBatch: StarSnap[] | null = null;
-  private forgetBatch: Ghost[] | null = null;
   // PC 向けのカメラ操作
   private panning: { id: number; sx: number; sy: number; cx: number; cy: number } | null = null;
   private spaceDown = false;
   private shiftHeld = false; // 押している間はパンが速くなる
   private keys = new Set<string>(); // 押されている間パンやズームを続けるキー
 
-  constructor(private app: App) {}
+  constructor(private app: App) {
+    const { camera, player, universe, history } = app;
+    this.tools = createTools({
+      camera,
+      player,
+      universe,
+      history,
+      hit: new HitTester(camera, universe),
+      // ui は Input より後に作られるので、呼ぶ時に解決する
+      feedback: { ping: () => app.ui.ping(), haptic: () => app.ui.haptic() },
+    });
+    this.current = this.tools.move;
+  }
+
+  get tool(): ToolName {
+    return this.current.name;
+  }
+  // 引き途中の線（描画用）
+  get linkPreview(): LinkPreview | null {
+    return this.current.linkPreview?.() ?? null;
+  }
 
   bind() {
     addEventListener("pointerdown", (e) => this.handlePointerDown(e));
@@ -60,7 +73,9 @@ export class Input {
   }
 
   setTool(name: ToolName) {
-    this.tool = name;
+    if (name === this.current.name) return;
+    this.current.cancel(); // 途中の操作は確定してから切り替える
+    this.current = this.tools[name];
   }
   startMapDrag(e: MouseEvent) {
     this.mapDrag = true;
@@ -72,85 +87,13 @@ export class Input {
     this.app.player.target = { x: wx, y: wy };
   }
 
-  // 画面上の点に近い星 / 幽霊（hit px 以内）
-  starAt(sx: number, sy: number, hit = HIT_RADIUS, exclude: string | null = null): Star | null {
-    const { camera, universe } = this.app;
-    const [wx, wy] = camera.screenToWorld(sx, sy);
-    return universe.getStarAt(wx, wy, hit / camera.scalePx(), exclude);
-  }
-  ghostAt(sx: number, sy: number, hit = 20): Ghost | null {
-    const { camera, universe } = this.app;
-    const [wx, wy] = camera.screenToWorld(sx, sy);
-    return universe.getGhostAt(wx, wy, hit / camera.scalePx());
-  }
-  unstarAt(x: number, y: number): Star | null {
-    const s = this.starAt(x, y, 20);
-    if (s && this.app.universe.isMine(s)) {
-      this.app.universe.deleteStar(s);
-      return s;
-    }
-    return null;
-  }
-  eraseAt(x: number, y: number): Star | null {
-    const s = this.starAt(x, y, 16);
-    if (s) {
-      this.app.universe.deleteStar(s); // 消モードは誰の星でも消せる
-      return s;
-    }
-    return null;
-  }
-  forgetAt(x: number, y: number): Ghost | null {
-    const g = this.ghostAt(x, y, 18);
-    if (g) {
-      this.app.universe.forgetGhost(g);
-      return g;
-    }
-    return null;
-  }
-
-  finalizeBatches() {
-    const { universe, history, player } = this.app;
-    const color = () => player.colorIndex;
-    const place = (st: StarSnap) => universe.placeStar(st.x, st.y, color(), st);
-    const remove = (st: StarSnap, noGhost?: boolean) => {
-      const s = universe.stars.get(st.id);
-      if (s) universe.deleteStar(s, noGhost);
-    };
-
-    if (this.placeBatch) {
-      const list = this.placeBatch;
-      this.placeBatch = null;
-      if (list.length) {
-        history.pushOp({
-          undo: () => list.forEach((st) => remove(st, true)),
-          redo: () => list.forEach(place),
-        });
-      }
-    }
-    if (this.eraseBatch) {
-      const list = this.eraseBatch;
-      this.eraseBatch = null;
-      if (list.length) {
-        history.pushOp({
-          undo: () => list.forEach(place),
-          redo: () => list.forEach((st) => remove(st)),
-        });
-      }
-    }
-    if (this.forgetBatch) {
-      const list = this.forgetBatch;
-      this.forgetBatch = null;
-      if (list.length) {
-        history.pushOp({
-          undo: () => { list.forEach((g) => universe.ghosts.set(g.id, g)); universe.saveGhosts(); },
-          redo: () => { list.forEach((g) => universe.ghosts.delete(g.id)); universe.saveGhosts(); },
-        });
-      }
-    }
+  private pointerInfo(e: PointerEvent): PointerInfo {
+    const [wx, wy] = this.app.camera.screenToWorld(e.clientX, e.clientY);
+    return { sx: e.clientX, sy: e.clientY, wx, wy };
   }
 
   handlePointerDown(e: PointerEvent) {
-    const { camera, universe, player, network, ui, history } = this.app;
+    const { camera, universe, player, network, ui } = this.app;
     this.downTarget = e.target;
     if (e.target !== this.app.canvas) return;
     // Space+ドラッグ / 中ボタン / 右ボタンのドラッグで視点を動かす
@@ -168,58 +111,18 @@ export class Input {
       this.pinch = { d0: dist(a, b), z0: camera.z, wx, wy };
       return;
     }
-    const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
+    const p = this.pointerInfo(e);
     this.downX = e.clientX;
     this.downY = e.clientY;
-    universe.addPulse(wx, wy, 1, player.palette.glow);
-    network.send({ t: "pulse", x: wx, y: wy, c: player.colorIndex });
+    universe.addPulse(p.wx, p.wy, 1, player.palette.glow);
+    network.send({ t: "pulse", x: p.wx, y: p.wy, c: player.colorIndex });
     ui.ping();
     ui.haptic();
-
-    const tool = this.tool;
-    if (tool === "move") {
-      player.target = { x: wx, y: wy };
-    } else if (tool === "star") {
-      const s = this.starAt(e.clientX, e.clientY);
-      if (s && universe.isMine(s)) {
-        const d = this.unstarAt(e.clientX, e.clientY); // 自分の星の上なら消す
-        if (d) {
-          history.pushOp({
-            undo: () => universe.placeStar(d.x, d.y, player.colorIndex, snap(d)),
-            redo: () => { const c = universe.stars.get(d.id); if (c) universe.deleteStar(c); },
-          });
-        }
-      } else if (s) {
-        universe.admire(s); // 他人の星に触れたらきらめきを送る
-        ui.ping();
-      } else {
-        const ns = universe.placeStar(wx, wy, player.colorIndex);
-        this.placeBatch = [snap(ns)];
-        this.lastPlaced = [e.clientX, e.clientY];
-      }
-    } else if (tool === "line") {
-      const s = this.starAt(e.clientX, e.clientY);
-      if (s) {
-        this.linking = s;
-        this.linkTip = [wx, wy];
-      } else {
-        player.target = { x: wx, y: wy }; // 空を掴んだら普通に動く
-      }
-    } else if (tool === "erase") {
-      this.erasing = true;
-      this.eraseBatch = [];
-      const d = this.eraseAt(e.clientX, e.clientY);
-      if (d) this.eraseBatch.push(snap(d));
-    } else if (tool === "ghost") {
-      this.ghosting = true;
-      this.forgetBatch = [];
-      const g = this.forgetAt(e.clientX, e.clientY);
-      if (g) this.forgetBatch.push({ ...g });
-    }
+    this.current.down(p);
   }
 
   handlePointerMove(e: PointerEvent) {
-    const { camera, universe, player } = this.app;
+    const { camera, player } = this.app;
     if (this.mapDrag) {
       const r = this.app.ui.mapEl.getBoundingClientRect();
       this.moveToMap(e.clientX - r.left, e.clientY - r.top);
@@ -232,14 +135,10 @@ export class Input {
       camera.free = true;
       return;
     }
-    if (this.linking) {
-      this.linkTip = camera.screenToWorld(e.clientX, e.clientY);
-      return;
-    }
-    const p = this.pointers.get(e.pointerId);
-    if (p) {
-      p.x = e.clientX;
-      p.y = e.clientY;
+    const pt = this.pointers.get(e.pointerId);
+    if (pt) {
+      pt.x = e.clientX;
+      pt.y = e.clientY;
     }
     if (this.pinch && this.pointers.size >= 2) {
       const [a, b] = [...this.pointers.values()];
@@ -248,35 +147,15 @@ export class Input {
       camera.anchor(this.pinch.wx, this.pinch.wy, m.x, m.y);
       return;
     }
-    if (this.erasing && p) {
-      const d = this.eraseAt(e.clientX, e.clientY); // なぞった星を消していく
-      if (d && this.eraseBatch) this.eraseBatch.push(snap(d));
-      return;
-    }
-    if (this.ghosting && p) {
-      const g = this.forgetAt(e.clientX, e.clientY); // なぞった幽霊を忘れていく
-      if (g && this.forgetBatch) this.forgetBatch.push({ ...g });
-      return;
-    }
-    if (this.tool === "star" && p) {
-      // なぞった軌道に沿って連続で星を置く
-      if (this.lastPlaced && Math.hypot(e.clientX - this.lastPlaced[0], e.clientY - this.lastPlaced[1]) > 10) {
-        const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
-        const ns = universe.placeStar(wx, wy, player.colorIndex);
-        if (this.placeBatch) this.placeBatch.push(snap(ns));
-        this.lastPlaced = [e.clientX, e.clientY];
-      }
-      return;
-    }
+    const p = this.pointerInfo(e);
+    if (this.current.move(p, pt !== undefined)) return;
     if (this.pointers.size <= 1) {
-      const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
-      player.target = { x: wx, y: wy };
+      player.target = { x: p.wx, y: p.wy };
       camera.free = false;
     }
   }
 
   handlePointerUp(e: PointerEvent) {
-    const { universe, history, player, ui } = this.app;
     if (this.panning && e.pointerId === this.panning.id) {
       this.panning = null;
       this.updateCursor();
@@ -287,58 +166,10 @@ export class Input {
     if (this.pointers.size < 2) this.pinch = null;
     this.mapDrag = false;
 
-    if (this.linking) {
-      const b = this.starAt(e.clientX, e.clientY, 22, this.linking.id);
-      if (b) {
-        const l = universe.addLink(this.linking.id, b.id);
-        if (l) {
-          ui.ping();
-          history.pushOp({
-            undo: () => universe.removeLink(l.id),
-            redo: () => universe.restoreLink(l),
-          });
-        }
-      }
-      this.linking = null;
-      this.linkTip = null;
-      return;
-    }
-    this.finalizeBatches();
-    this.lastPlaced = null;
-    this.erasing = this.ghosting = false;
-    if (wasPinch || this.pointers.size > 0) return;
-    if (this.downTarget !== this.app.canvas) return;
-
+    // タップ＝ピンチでなく・他の指もなく・キャンバス上で押して・ほとんど動いていない
     const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-    if (moved > 12) return;
-    if (this.tool !== "move") return;
-
-    const s = this.starAt(e.clientX, e.clientY, 20);
-    if (s) {
-      if (universe.isMine(s)) {
-        const d = { ...s };
-        universe.deleteStar(s); // 自分の星をタップで消す
-        history.pushOp({
-          undo: () => universe.placeStar(d.x, d.y, player.colorIndex, d),
-          redo: () => { const c = universe.stars.get(d.id); if (c) universe.deleteStar(c); },
-        });
-      } else {
-        universe.admire(s); // 他人の星をタップできらめき
-        ui.ping();
-      }
-      return;
-    }
-    const g = this.ghostAt(e.clientX, e.clientY);
-    if (g) {
-      const gg = { ...g };
-      universe.reviveGhost(g); // 消えた自分の星はタップで復活
-      ui.ping();
-      ui.haptic();
-      history.pushOp({
-        undo: () => { const st = universe.stars.get(gg.id); if (st) universe.deleteStar(st); }, // 幽霊に戻す
-        redo: () => universe.reviveGhost(gg),
-      });
-    }
+    const tap = !wasPinch && this.pointers.size === 0 && this.downTarget === this.app.canvas && moved <= 12;
+    this.current.up(this.pointerInfo(e), tap); // tap でなくても呼ぶ（ドラッグ中の操作を確定する）
   }
 
   handlePointerCancel(e: PointerEvent) {
@@ -349,9 +180,7 @@ export class Input {
     this.pointers.delete(e.pointerId);
     if (this.pointers.size < 2) this.pinch = null;
     this.mapDrag = false;
-    this.finalizeBatches();
-    this.linking = this.linkTip = this.lastPlaced = null;
-    this.erasing = this.ghosting = false;
+    this.current.cancel();
   }
 
   handleWheel(e: WheelEvent) {
@@ -369,7 +198,8 @@ export class Input {
       const k = e.key.toLowerCase();
       if (k === "z") {
         e.preventDefault();
-        e.shiftKey ? this.app.history.redo() : this.app.history.undo();
+        if (e.shiftKey) this.app.history.redo();
+        else this.app.history.undo();
       } else if (k === "y") {
         e.preventDefault();
         this.app.history.redo();
@@ -417,7 +247,9 @@ export class Input {
     const seconds = dt * (1 / 60);
     const fast = this.shiftHeld ? 2.5 : 1;
     const step = KEY_PAN_PX_PER_SEC * fast * seconds;
-    let dx = 0, dy = 0, zoom = 0;
+    let dx = 0,
+      dy = 0,
+      zoom = 0;
     for (const k of this.keys) {
       if (k === "arrowleft" || k === "a") dx += step;
       else if (k === "arrowright" || k === "d") dx -= step;

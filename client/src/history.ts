@@ -10,8 +10,7 @@ export class History {
   private undoStack: Op[] = [];
   private redoStack: Op[] = [];
 
-  constructor(private onChange: () => void) {
-  }
+  constructor(private onChange: () => void) {}
   get canUndo(): boolean {
     return this.undoStack.length > 0;
   }

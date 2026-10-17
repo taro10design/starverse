@@ -7,3 +7,9 @@ export interface Point {
 export const snap = (s: { id: string; x: number; y: number; c: number }) => ({ id: s.id, x: s.x, y: s.y, c: s.c });
 export const mid = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 export const dist = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
+
+// null / undefined なら理由つきで例外にする（存在するはずのものを `!` で黙って断定しない）
+export function must<T>(value: T | null | undefined, what: string): T {
+  if (value == null) throw new Error(`${what} が見つかりません`);
+  return value;
+}

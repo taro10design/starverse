@@ -1,6 +1,7 @@
 import { PALETTES, PEER_COLOR, ttlFor, MAP_SIZE } from "./constants";
 import type { Palette } from "./constants";
 import { DPR, SOLO } from "./env";
+import { must } from "./util";
 import type { App } from "./app";
 import type { Star } from "./universe";
 
@@ -34,7 +35,7 @@ export class Renderer {
     private app: App,
     private canvas: HTMLCanvasElement,
   ) {
-    this.ctx = canvas.getContext("2d")!;
+    this.ctx = must(canvas.getContext("2d"), "2D コンテキスト");
     this.resize();
     addEventListener("resize", () => this.resize());
     this.bgStars = Array.from({ length: 140 }, () => ({
@@ -53,7 +54,7 @@ export class Renderer {
   static makeSprite(p: Palette, midAlpha: number): HTMLCanvasElement {
     const c = document.createElement("canvas");
     c.width = c.height = 64;
-    const g2 = c.getContext("2d")!;
+    const g2 = must(c.getContext("2d"), "2D コンテキスト");
     const g = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
     g.addColorStop(0, p.core);
     g.addColorStop(0.3, `rgba(${p.glow.join(",")},${midAlpha})`);
@@ -69,7 +70,7 @@ export class Renderer {
   }
 
   setMinimap(canvas: HTMLCanvasElement) {
-    this.mctx = canvas.getContext("2d")!;
+    this.mctx = must(canvas.getContext("2d"), "ミニマップの 2D コンテキスト");
     this.mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
   mapToWorld(mx: number, my: number): [number, number] {
@@ -78,7 +79,8 @@ export class Renderer {
   }
 
   resize() {
-    const W = innerWidth, H = innerHeight;
+    const W = innerWidth,
+      H = innerHeight;
     this.app.camera.resize(W, H);
     this.canvas.width = W * DPR;
     this.canvas.height = H * DPR;
@@ -243,7 +245,8 @@ export class Renderer {
     ctx.strokeStyle = "rgba(225, 230, 255, 0.3)";
     ctx.lineWidth = 1 * camera.dotScale();
     for (const l of universe.links.values()) {
-      const a = universe.stars.get(l.a), b = universe.stars.get(l.b);
+      const a = universe.stars.get(l.a),
+        b = universe.stars.get(l.b);
       if (!a || !b) continue;
       const [ax, ay] = camera.worldToScreen(...(orbitPos.get(l.a) || [a.x, a.y]));
       const [bx, by] = camera.worldToScreen(...(orbitPos.get(l.b) || [b.x, b.y]));
@@ -252,9 +255,10 @@ export class Renderer {
       ctx.lineTo(bx, by);
       ctx.stroke();
     }
-    if (input.linking && input.linkTip) {
-      const [ax, ay] = camera.worldToScreen(input.linking.x, input.linking.y);
-      const [bx, by] = camera.worldToScreen(input.linkTip[0], input.linkTip[1]);
+    const preview = input.linkPreview;
+    if (preview) {
+      const [ax, ay] = camera.worldToScreen(preview.from.x, preview.from.y);
+      const [bx, by] = camera.worldToScreen(preview.tip[0], preview.tip[1]);
       ctx.save();
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = "rgba(235, 240, 255, 0.55)";
@@ -316,8 +320,16 @@ export class Renderer {
     if (!mctx) return;
     const { camera, universe, player } = this.app;
     const { W, H } = camera;
-    let x0 = 0, y0 = 0, x1 = 1, y1 = 1;
-    const corners = [camera.screenToWorld(0, 0), camera.screenToWorld(W, 0), camera.screenToWorld(W, H), camera.screenToWorld(0, H)];
+    let x0 = 0,
+      y0 = 0,
+      x1 = 1,
+      y1 = 1;
+    const corners = [
+      camera.screenToWorld(0, 0),
+      camera.screenToWorld(W, 0),
+      camera.screenToWorld(W, H),
+      camera.screenToWorld(0, H),
+    ];
     const grow = (x: number, y: number) => {
       if (x < x0) x0 = x;
       if (x > x1) x1 = x;
@@ -331,7 +343,10 @@ export class Renderer {
     const pad = 0.12 * Math.max(x1 - x0, y1 - y0);
     const s = Math.max(x1 - x0, y1 - y0) + pad * 2;
     const b = (this.mapBounds = { x0: (x0 + x1) / 2 - s / 2, y0: (y0 + y1) / 2 - s / 2, s });
-    const M = (wx: number, wy: number): [number, number] => [((wx - b.x0) / s) * MAP_SIZE, ((wy - b.y0) / s) * MAP_SIZE];
+    const M = (wx: number, wy: number): [number, number] => [
+      ((wx - b.x0) / s) * MAP_SIZE,
+      ((wy - b.y0) / s) * MAP_SIZE,
+    ];
 
     mctx.clearRect(0, 0, MAP_SIZE, MAP_SIZE);
     mctx.fillStyle = "rgba(8, 12, 30, 0.55)";
@@ -361,7 +376,8 @@ export class Renderer {
     mctx.beginPath();
     corners.forEach(([vx, vy], i) => {
       const [x, y] = M(vx, vy);
-      i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+      if (i === 0) mctx.moveTo(x, y);
+      else mctx.lineTo(x, y);
     });
     mctx.closePath();
     mctx.stroke();

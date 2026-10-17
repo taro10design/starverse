@@ -1,15 +1,20 @@
 import { PALETTES, MAP_SIZE, TOOL_SVG, TOOL_TIPS } from "./constants";
 import { DPR, SOLO } from "./env";
+import { storage } from "./storage";
+import { must } from "./util";
 import type { ToolName } from "./constants";
 import type { App } from "./app";
 
 // ---------------------------------------------------------------------------
 // UI — DOM の生成とイベント、触覚・音のフィードバック
 // ---------------------------------------------------------------------------
-const ICON_FOCUS = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const ICON_FOCUS =
+  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 const TOOL_ORDER: ToolName[] = ["move", "star", "line", "erase", "ghost"];
-const ICON_UNDO = '<svg viewBox="0 0 24 24"><path d="M8 5 L3 9.5 L8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 9.5 L14 9.5 A6 6 0 0 1 14 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-const ICON_REDO = '<svg viewBox="0 0 24 24"><path d="M16 5 L21 9.5 L16 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9.5 L10 9.5 A6 6 0 0 0 10 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const ICON_UNDO =
+  '<svg viewBox="0 0 24 24"><path d="M8 5 L3 9.5 L8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 9.5 L14 9.5 A6 6 0 0 1 14 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const ICON_REDO =
+  '<svg viewBox="0 0 24 24"><path d="M16 5 L21 9.5 L16 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9.5 L10 9.5 A6 6 0 0 0 10 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 export class UI {
   private hapticEl: HTMLInputElement | null = null;
@@ -175,29 +180,27 @@ export class UI {
     document.body.appendChild(btn);
     document.body.appendChild(help);
 
-    const keyBtn = help.querySelector<HTMLElement>("#keybtn")!;
+    const keyBtn = must(help.querySelector<HTMLElement>("#keybtn"), "#keybtn");
     UI.onPress(keyBtn, () => this.copyKeyLink(keyBtn));
 
-    const reviveBtn = help.querySelector<HTMLElement>("#revivebtn")!;
+    const reviveBtn = must(help.querySelector<HTMLElement>("#revivebtn"), "#revivebtn");
     UI.onPress(reviveBtn, () => {
       const n = this.app.reviveAllGhosts();
       reviveBtn.textContent = n ? `${n}個復活した` : "幽霊がいない";
       setTimeout(() => (reviveBtn.textContent = "幽霊を全部復活"), 1500);
     });
 
-    let seen = false;
-    try {
-      seen = !!localStorage.getItem("uchu-seen");
-    } catch {}
-    if (!seen) help.classList.add("open");
+    if (!storage.get("uchu-seen")) help.classList.add("open");
 
     // パネル外をタップしたら閉じる
     addEventListener("pointerdown", (e) => {
-      if (help.classList.contains("open") && e.target !== btn && !(e.target instanceof Element && e.target.closest("#help"))) {
+      if (
+        help.classList.contains("open") &&
+        e.target !== btn &&
+        !(e.target instanceof Element && e.target.closest("#help"))
+      ) {
         help.classList.remove("open");
-        try {
-          localStorage.setItem("uchu-seen", "1");
-        } catch {}
+        storage.set("uchu-seen", "1");
       }
     });
   }
@@ -210,7 +213,10 @@ export class UI {
       setTimeout(() => (keyBtn.textContent = "鍵リンクをコピー"), 1500);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url).then(done).catch(() => prompt("このリンクを保存してね", url));
+      navigator.clipboard
+        .writeText(url)
+        .then(done)
+        .catch(() => prompt("このリンクを保存してね", url));
     } else {
       prompt("このリンクを保存してね", url);
     }
@@ -236,7 +242,9 @@ export class UI {
   haptic() {
     try {
       if (navigator.vibrate && navigator.vibrate(12)) return;
-    } catch {}
+    } catch {
+      // 触覚に対応していない環境では何もしない
+    }
     try {
       if (!this.hapticEl) {
         const el = (this.hapticEl = document.createElement("input"));
@@ -246,12 +254,18 @@ export class UI {
         document.body.appendChild(el);
       }
       this.hapticEl.click();
-    } catch {}
+    } catch {
+      // 触覚に対応していない環境では何もしない
+    }
   }
 
   ping() {
     try {
-      const actx = (this.audioCtx = this.audioCtx || new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)());
+      const actx = (this.audioCtx =
+        this.audioCtx ||
+        new (
+          window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+        )());
       const o = actx.createOscillator();
       const g = actx.createGain();
       o.type = "sine";
@@ -261,6 +275,8 @@ export class UI {
       o.connect(g).connect(actx.destination);
       o.start();
       o.stop(actx.currentTime + 0.9);
-    } catch {}
+    } catch {
+      // 音を出せない環境（自動再生の制限など）では何もしない
+    }
   }
 }

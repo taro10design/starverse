@@ -12,8 +12,6 @@ export class Camera {
   H = 0;
   free = false; // ズーム/地図操作中は自分の光を追わない
 
-  constructor() {
-  }
   resize(W: number, H: number) {
     this.W = W;
     this.H = H;
@@ -70,7 +68,8 @@ export class Camera {
   follow(player: Player) {
     if (this.free) return;
     const [px, py] = this.worldToScreen(player.x, player.y);
-    const mx = this.W * 0.22, my = this.H * 0.22;
+    const mx = this.W * 0.22,
+      my = this.H * 0.22;
     const s = this.scalePx();
     if (px < mx) this.cx -= (mx - px) / s;
     if (px > this.W - mx) this.cx += (px - (this.W - mx)) / s;

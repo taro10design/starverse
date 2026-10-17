@@ -57,7 +57,6 @@ export class App {
     this.camera.focusOn(this.player.x, this.player.y);
   }
 
-
   // 消モードでもう一度押す＝自分の星を全部消す
   clearMine() {
     const { universe, history, player, ui } = this;
@@ -72,7 +71,11 @@ export class App {
     ui.haptic();
     history.pushOp({
       undo: () => list.forEach((st) => universe.placeStar(st.x, st.y, player.colorIndex, st)),
-      redo: () => list.forEach((st) => { const s = universe.stars.get(st.id); if (s) universe.deleteStar(s); }),
+      redo: () =>
+        list.forEach((st) => {
+          const s = universe.stars.get(st.id);
+          if (s) universe.deleteStar(s);
+        }),
     });
   }
 
@@ -91,7 +94,11 @@ export class App {
     if (gs.length) {
       this.ui.haptic();
       history.pushOp({
-        undo: () => gs.forEach((g) => { const s = universe.stars.get(g.id); if (s) universe.deleteStar(s); }),
+        undo: () =>
+          gs.forEach((g) => {
+            const s = universe.stars.get(g.id);
+            if (s) universe.deleteStar(s);
+          }),
         redo: () => gs.forEach((g) => universe.reviveGhost(g)),
       });
     }
