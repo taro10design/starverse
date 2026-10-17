@@ -6,3 +6,7 @@ export const MAX_LINKS_PER_USER = 96; // 1 人が同時に引ける線の数
 
 // 持ち主の鍵（uid）の形式。クライアントが作り、サーバーは検証するだけ（切り詰めない）
 export const UID_PATTERN = /^[\w-]{8,64}$/;
+
+// サーバーが作る持ち主 ID（uid の SHA-256 の先頭 32 文字の 16 進数）。
+// これに合わない `by` は、uid が混ざっている可能性があるので、読み込み時に捨てる
+export const OWNER_ID_PATTERN = /^[0-9a-f]{32}$/;
