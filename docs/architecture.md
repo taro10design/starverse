@@ -5,41 +5,48 @@
    │
    └──WebSocket /ws──▶ Worker ──▶ 空き容量のある「空」(Durable Object: space, space-2, ...)
                                       ├─ World   星・線とルール（純粋なクラス）
-                                      ├─ 視界ベースの位置配信（10Hz でまとめて送る）
+                                      ├─ 視界ベースの位置配信（まとめて送る）
                                       └─ storage: 星 / 線を 1 件 1 キーで差分保存
 ```
+
+設計判断とその理由は [adr/](adr/README.md)、仕様は [specs/](specs/README.md) にあります。この文書は「どこに何があるか」の地図です。
 
 ## リポジトリ構成
 
 ```
 client/    ブラウザ側（Vite + TypeScript + Canvas 2D）
-  src/       app / camera / player / universe / network / input / renderer / ui / history
-             message-handlers.ts … サーバーからのメッセージごとの処理
-  public/    OGP 画像など
+  src/       app / camera / player / universe / network / renderer / ui / history / input
+             tools/            ツールごとの操作（Strategy）。Input は振り分けだけ
+             message-handlers  サーバーからのメッセージごとの処理（型で網羅を強制）
+             storage / util / constants / env
+  tests/     Camera・History・メッセージ処理・ツールの単体テスト
+  public/    OGP 画像、_headers（セキュリティヘッダ・キャッシュ）
 server/    Cloudflare Workers 側
-  src/       index.ts（入口）/ room.ts（Durable Object）/ world.ts（ルール）
-             handlers.ts / validate.ts / rate-limit.ts / spatial.ts / config.ts
-  tests/     World・検証・レート制限・空間ハッシュの単体テスト
+  src/       index.ts（入口・空の振り分け・/stats）/ room.ts（Durable Object）/ world.ts（ルール）
+             handlers.ts / validate.ts / rate-limit.ts / spatial.ts / config.ts / env.ts
+  tests/     World・検証・レート制限・空間ハッシュ・設定の単体テスト
 shared/    クライアントとサーバーが共有する型とルール
              protocol.ts（WebSocket のメッセージ型）/ rules.ts（星の寿命ルール）
-scripts/   負荷テスト
-docs/      ドキュメント
-wrangler.jsonc, package.json, tsconfig.json   ルートには設定だけを置く
+scripts/   e2e.mjs（動作確認）/ loadtest.mjs（負荷テスト）
+docs/      adr（設計判断）/ specs（仕様）/ qa（実機確認）/ TODO.md / この文書 / extending.md
 ```
+
+ルートには `package.json`・`tsconfig.json`・`wrangler.jsonc`・`eslint.config.mjs` など設定だけを置きます。
 
 依存の向きは `client → shared ← server`。クライアントとサーバーは互いを直接 import しません。
 
 ## 設計方針（スケールのために）
 
-| 課題 | 対策 | 場所 |
+| 課題 | 対策 | 詳細 |
 | --- | --- | --- |
-| 位置の全員配信が O(n²)（500 人で毎秒約 300 万送信） | **視界ベースの配信**。クライアントが見ている範囲 `v` を送り、サーバーは視界の近くの動いた人だけを 100ms ごとに 1 通へまとめて送る。視界外は 2 秒ごとの粗い一覧（ミニマップ用） | [room.ts](../server/src/room.ts) の `tick()` |
-| 星の保存のたびに全件をシリアライズ | **1 件 1 キー（`s:<id>` / `l:<id>`）で、変わった分だけ保存**。旧形式は初回起動時に自動で移行 | [world.ts](../server/src/world.ts) の `drainChanges()` |
-| 密集度の計算が O(n²) で、接続のたびに実行 | **空間ハッシュ**で近傍だけを数える。実行は 1 秒以上あけ、15 秒ごとのアラームでも実行 | [spatial.ts](../server/src/spatial.ts) |
-| 不正な値・連打・他人の星の上書き | **入力検証**（型・範囲・長さ）、**接続ごとのトークンバケット**（操作ごとにコスト）、他人の星は上書き不可 | [validate.ts](../server/src/validate.ts) / [rate-limit.ts](../server/src/rate-limit.ts) |
-| 1 つの Durable Object の限界 | **満員（300 人）になったら次の空へ振り分け**（最大 8 空）。先頭の `space` は従来の名前のまま、既存データを引き継ぐ | [index.ts](../server/src/index.ts) |
-| 誰も動かないのにタイマーが回り続ける | 動きが無い間は配信タイマーを止め、Durable Object がハイバネートできるようにする | `room.ts` |
-| クライアントとサーバーでルールがずれる | 星の寿命ルールを [shared/rules.ts](../shared/rules.ts) に 1 つだけ置く | |
+| 位置の全員配信が O(n²) | **視界ベースの配信**。クライアントが見ている範囲 `v` を送り、サーバーは視界の近くの動いた人だけを 1 通にまとめて送る。視界外は粗い一覧（ミニマップ用） | [ADR 0002](adr/0002-interest-management-presence.md) |
+| 1 つの Durable Object が受けられる量には限りがある（目安 約 500〜1,000 req/s） | **サーバーが人数に応じて各クライアントの位置の送信間隔を指示**（100〜1000ms）。受信量を予算（500 通/秒）に収める | [ADR 0003](adr/0003-server-directed-send-rate.md) |
+| 1 つの Durable Object の限界 | **満員（300 人）になったら次の空へ振り分け**（最大 8 空）。先頭の `space` は従来の名前のまま | [ADR 0001](adr/0001-rooms-and-sharding.md) |
+| 星の保存のたびに全件をシリアライズ | **1 件 1 キー（`s:<id>` / `l:<id>`）で、変わった分だけ保存** | [ADR 0005](adr/0005-world-as-pure-class.md) |
+| 密集度の計算が O(n²) | **空間ハッシュ**で近傍だけを数える。実行は 1 秒以上あけ、30 秒ごとのアラームでも実行 | [spatial.ts](../server/src/spatial.ts) |
+| 不正な値・連打・他人の星の上書き | **入力検証**（型・範囲・長さ）、**接続ごとのトークンバケット**、他人の星は上書き不可 | [validate.ts](../server/src/validate.ts) / [rate-limit.ts](../server/src/rate-limit.ts) |
+| 誰も動かないのにタイマーが回り続ける | 動きが無い間は配信タイマーを止め、Durable Object がハイバネートできるようにする | [room.ts](../server/src/room.ts) |
+| クライアントとサーバーでルールがずれる | メッセージ型と星の寿命ルールを `shared/` の 1 か所に置く。ハンドラ表で処理の書き忘れを型エラーにする | [ADR 0004](adr/0004-shared-protocol-and-handler-tables.md) |
 
 調整値はすべて [server/src/config.ts](../server/src/config.ts) にあります。
 
@@ -56,50 +63,58 @@ JSON を WebSocket で送受信します。`t` が種別で、通信量を抑え
 
 | クライアント → サーバー | 意味 |
 | --- | --- |
-| `p` | 自分の位置・色・視界。動いたときだけ（動かなくても 5 秒に 1 回） |
+| `p` | 自分の位置・色・視界。動いたときだけ（動かなくても 5 秒に 1 回）、サーバーが指示した間隔で |
 | `pulse` | 波紋を出す |
 | `star` / `unstar` | 星を灯す / 消す |
 | `admire` | 星にきらめきを送る（寿命リセット） |
 | `link` / `unlink` | 線を引く / 消す |
+| `"ping"`（文字列） | 死活監視。Durable Object を起こさずに `"pong"` が返る |
 
 | サーバー → クライアント | 意味 |
 | --- | --- |
-| `welcome` | 接続直後に 1 回。今いる人・全ての星・全ての線 |
+| `welcome` | 接続直後に 1 回。自分の id・位置の送信間隔・今いる人・全ての星・全ての線 |
+| `rate` | 空の人数が変わったときの、位置の送信間隔の指示 |
 | `ps` | 他の人の位置のまとめ（`[id, x, y, color]` の配列） |
 | `pulse` | 視界内で起きた波紋 |
 | `star` / `unstar` / `link` / `unlink` / `admire` | 星・線の変化（全員に） |
 | `leave` | 誰かが抜けた |
 
-未知のメッセージは、サーバー・クライアントのどちらも無視します（新旧のバージョンが混在しても落ちないように）。
+未知のメッセージは、サーバー・クライアントのどちらも無視します。
 
 ## 実装上のポイント
 
 - **Hibernation API**: `ctx.acceptWebSocket()` で接続を受け、アイドル時は Durable Object がメモリから退避される。復帰時は `serializeAttachment` の内容から接続を取り込み直す
-- **永続化**: `blockConcurrencyWhile` で保存済みの星・線を復元してから最初のリクエストを処理する
+- **永続化**: `blockConcurrencyWhile` で保存済みの星・線を復元してから最初のリクエストを処理する。保存は変わった分だけ
+- **死活監視**: クライアントが 25 秒ごとに `"ping"` を送り、70 秒何も届かなければつなぎ直す。再接続の待ち時間にはジッターを入れる。タブが 30 秒隠れたら切断して空きを返し、戻ったらつなぎ直す
 - **接続先の切り替え**: `workers.dev` と `wrangler dev`（8787）では同一オリジン、`?ws=localhost:8787` で手元の Worker に上書き可能（`uid` の流出を避けるため localhost のみ許可）、それ以外は本番の Worker（[constants.ts](../client/src/constants.ts) の `WS_HOST`）
-- **型による網羅性**: メッセージを足すと、ハンドラ表が足りない箇所が型エラーになる（[extending.md](extending.md)）
+- **ツール（Strategy）**: 操作はツールごとのクラス（`client/src/tools/`）。ツールは `ToolContext`（必要なものだけ）を受け取り、ドラッグ中の連続操作は自分で 1 つの履歴にまとめる
+- **ストレージ**: `localStorage` の失敗は [storage.ts](../client/src/storage.ts) の 1 か所だけで握りつぶす
+- **観測**: `GET /stats` が空ごとの接続数・星の数・送信間隔を返す（10 秒キャッシュ）
 
 ## 負荷テスト
 
-`npm run loadtest -- ws://localhost:8787/ws <人数> <秒>` で、N 人が世界に散らばって動き続けた状態の配信量と、別の 2 接続による波紋の往復遅延（プローブ）を測ります。**ローカルの `wrangler dev`（workerd）に向けて**使い、本番には向けません。
+`npm run loadtest -- ws://localhost:8787/ws <人数> <秒>` で、N 人が世界に散らばって動き続けた状態の配信量と、別の 2 接続による波紋の往復遅延（プローブ）を測ります。クライアントはサーバーが指示した送信間隔に従います。**ローカルの `wrangler dev`（workerd）に向けて**使い、本番には向けません。
 
-ローカル（Windows、同一マシンで負荷生成）での結果。10 秒間の測定です。
+ローカル（Windows、同一マシンで負荷生成、10 秒間の測定）での結果です。
 
-| 人数 | 旧実装 | 新実装 |
+| 人数 | 位置を全員 10Hz で送る設計 | サーバーが送信間隔を指示する設計 |
 | --- | --- | --- |
-| 50 | 23,151 msg/s、遅延 p50=55ms | 515 msg/s、遅延 p50=13ms / p95=29ms |
-| 100 | 7,782 msg/s（理想値の約 8%）、プローブが届かない | 1,060 msg/s、p50=4ms / p95=20ms |
-| 200 | 51/200 人しか接続できない | 200/200 接続、p50=13ms / p95=54ms |
-| 300 | — | 300/300 接続、p50=65ms / p95=138ms |
-| 500 | — | 451/500 接続後に配信が止まる（[TODO](TODO.md) に調査項目） |
+| 50 | 遅延 p50=55ms | — |
+| 100 | 配信が崩壊（理想値の約 8%）、プローブが届かない | p50=3ms / p95=19ms |
+| 200 | 51/200 人しか接続できない | — |
+| 300 | p50=45〜241ms、p95=1.7〜3.5 秒（不安定） | p50=3.9ms / p95=39ms |
+| 500 | 配信が約 5 秒遅れる | p50=5ms / p95=34ms |
+| 1000 | — | p50=13ms / p95=46ms |
 
-負荷生成側のイベントループ遅延は p95 約 20ms で、計測側は飽和していません。実環境（Cloudflare のエッジ）の値ではない点に注意してください。
+ローカルのランタイムは本番と違い、メッセージ 1 通あたりの固定コストが大きく、全ての空が 1 つのスレッドを共有します。**絶対値ではなく、前後の比較**として読んでください。
 
-## 技術スタック
+## 動作確認（E2E）
 
-- フロントエンド: TypeScript + Canvas 2D（Vite でビルド、ライブラリ依存なし）
-- バックエンド: TypeScript、Cloudflare Workers + Durable Objects
-- テスト: Vitest（`npm test`）
+```bash
+npm run dev:server                                  # 別のターミナルで起動
+node scripts/e2e.mjs http://localhost:8787 --full   # ローカル向け（書き込みあり。作った星は後片付けする）
+node scripts/e2e.mjs https://uchu.pages.dev         # 本番向け（読み取りだけ）
+```
 
 ## ローカル実行・デプロイ
 
@@ -107,8 +122,7 @@ JSON を WebSocket で送受信します。`t` が種別で、通信量を抑え
 npm install
 npm run dev            # クライアントの開発サーバー（本番の Worker に接続）
 npm run dev:server     # Worker + 静的ファイルをローカルで起動（http://localhost:8787）
-npm run typecheck      # クライアント・サーバーの型チェック
-npm test               # 単体テスト
+npm run check          # 型チェック・lint・整形チェック・単体テスト
 npm run build          # client/dist/ に出力
 
 # デプロイ
@@ -116,4 +130,4 @@ npm run deploy         # ビルド + Pages へ配信
 npm run deploy:server  # Worker（Durable Object）
 ```
 
-> 注意: 今回の変更でクライアントとサーバーの通信形式が変わりました（`p` の配信が `ps` に）。Worker と Pages は**同じタイミングで**デプロイしてください。
+> 注意: `wrangler dev` を起動したままビルドしないでください（`client/dist` を監視しているため、ビルドが失敗することがあります）。また、通信形式が変わったときは Worker と Pages を続けてデプロイしてください（[ADR 0006](adr/0006-no-backward-compatibility.md)）。
