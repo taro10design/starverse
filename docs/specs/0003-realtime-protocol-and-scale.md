@@ -32,10 +32,10 @@
 
 ### 送信間隔・レート・容量（server/src/config.ts）
 
-- 送信間隔 `sendMsFor(n)` = n 人 × 1000 / 500（`inboundBudgetPerSec`）ms を 50ms 刻みに切り上げ、100ms（`sendMsMin`）〜1000ms（`sendMsMax`）に収める。50 人まで 100ms、100 人で 200ms、300 人で 600ms。
+- 送信間隔 `sendMsFor(n)` = n 人 × 1000 / 500（`inboundBudgetPerSec`）ms を 50ms 刻みに切り上げ、100ms（`sendMsMin`）〜1000ms（`sendMsMax`）に収める。50 人まで 100ms、100 人で 200ms、300 人で 600ms。**空に 1 人だけのときは 1000ms**（誰にも見えないので、課金対象の受信メッセージを減らす。[ADR 0008](../adr/0008-cost-aware-message-budget.md)）。
 - クライアントはこの指示に従う（`welcome.sendMs` と `rate`）。動いたときだけ送る（動かない間は何も送らない。死活監視は ping に任せる）。
 - 配信の tick は 100 人まで 100ms、200 人まで 150ms、それ以上は 250ms。動きが 30 tick 無ければタイマーを止める（ハイバネート可能にする）。
-- レート制限はトークンバケット。容量 200、毎秒 40 回復。コストは `p`=1、`pulse`=4、`star`=2、`unstar`=1、`admire`=2、`link`=2、`unlink`=1。連続 200 回あふれると 1008 で切断する。
+- レート制限はトークンバケット。容量 200、毎秒 40 回復。コストは `p`=1、`pulse`=4、`star`=2、`unstar`=1、`admire`=2、`link`=2、`unlink`=1。メッセージは JSON を読む前に 1 トークンを取る（足りなければ捨てる）。あふれると +1、通ると −1 で数え、200 を超えると 1008 で切断する。hello の前後の違反が 20 回続いても切断する。
 - 容量は 1 つの空に 300 人（`roomCapacity`）、空は最大 8 つ（`maxRooms`）。空の名前は `space`, `space-2`, ...
 
 ## 受け入れ条件

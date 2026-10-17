@@ -33,18 +33,23 @@
 - hello の前に届いたメッセージは無視する。hello が 10 秒以内に来ない接続は alarm で切る。ハッシュ計算の間に届いた分は
   最大 32 件まで貯めて、`welcome` のあとに順に処理する。
 - 上限は持ち主 ID ごとに数える。持ち主は接続につき 1 つなので、1 接続が置ける星は 64 個まで。
-  同じ IP からの接続は 1 つの空あたり 4 本までにする（IP はハッシュにして持つ。生の IP は保存しない）。
+  同じ接続元（IPv6 は /64 単位）からの接続は 1 つの空あたり 4 本まで、60 秒あたり 12 回までにする。同じ接続元が置ける星は合計 128 個まで。
+  接続元は HMAC-SHA256（鍵は Durable Object の storage に初回起動時にランダムに作って保存）にして持つ。生の IP は保存しない。
+- 旧プロトコルで保存された星・線（`by` に生の uid が入っているもの）は、起動時に持ち主 ID の形式で判定して捨てる。
+  旧プロトコルの間に配信された uid はすでに他人に知られているので、クライアントも鍵を作り直す（保存キー `uchu-key`）。
+- 受信メッセージは、JSON を読む前に 1 通ごとにレート制限を通す。hello の前後の違反が続く接続は 1008 で切る。
 
 ## 結果
 
 - 良い点: 他人の `by` から `uid` は分からない。なりすましと、上限の枠の乗っ取りができなくなる。
 - 良い点: `uid` が通信に流れるのは接続ごとに 1 回で、各メッセージが軽くなる。
 - トレードオフ: 鍵リンク（`?key=<uid>`）を知る人は、その持ち主になれる。リンクの扱いは利用者に任せる。
+- トレードオフ: 鍵を作り直したので、旧い鍵で置いた星の持ち主は失われ、旧い鍵リンクは使えなくなる（ADR 0006）。
 - トレードオフ: 上限は接続・IP で縛るため、IP を変えられる攻撃者には効きにくい。根本の対策はエッジの
   Rate Limiting / WAF ルールに置く（[TODO](../TODO.md)）。
 
 ## 参考
 
-- 実装: `server/src/identity.ts`（`ownerFromUid` / `ipKey` / `safeEqual`）、`server/src/room.ts`（hello の処理）、`shared/protocol.ts`
+- 実装: `server/src/identity.ts`（`ownerFromUid` / `ipSubject` / `ipKey` / `safeEqual`）、`server/src/inbound.ts`（受信の関門）、`server/src/room.ts`（hello の処理）、`shared/protocol.ts`
 - 関連: ADR 0004（共有プロトコル）、ADR 0006（後方互換を取らない）
 - 知識ベース: `~/.claude/skills/knowledge-upkeep/references/security-and-protocol-design.md`

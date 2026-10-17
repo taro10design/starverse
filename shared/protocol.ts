@@ -40,14 +40,15 @@ export type PresenceTuple = [id: string, x: number, y: number, c: number];
 //
 // 持ち主の鍵 uid は秘密。接続の最初に `hello` で 1 回だけ送り、サーバーは SHA-256 で
 // 持ち主 ID（StarData.by / LinkData.by）に変えて保存・配信する。uid そのものは保存も配信もしない。
-// hello の前に送られた他のメッセージは無視される。
+// hello の前に送られた他のメッセージは無視され、続くと（20 回）1008 で切断される。形式に合わない uid の hello も 1008。
+// hello の処理中（ハッシュ計算の間）に届いたものは、welcome のあとに処理される。
 export type ClientMessage =
   | { t: "hello"; uid: string }
   | { t: "p"; x: number; y: number; c: number; v?: View }
   | { t: "pulse"; x: number; y: number }
   | { t: "star"; id: string; x: number; y: number; c: number }
   | { t: "unstar"; id: string }
-  | { t: "admire"; id: string }
+  | { t: "admire"; id: string } // 同じ接続から同じ星へは 5 秒に 1 回（超えたものは黙って捨てられる）
   | { t: "link"; id: string; a: string; b: string }
   | { t: "unlink"; id: string };
 
@@ -57,13 +58,14 @@ export type ServerMessage =
   | { t: "welcome"; id: string; me: string; sendMs: number; dots: PeerDot[]; stars: StarData[]; links: LinkData[] }
   // 空の人数が変わったときの、位置を送る間隔の指示（人が増えるほど間隔を広げる）
   | { t: "rate"; sendMs: number }
-  // 上限超過・レート制限などで断った操作。クライアントは自分の画面の星 / 線を取り消す
+  // 上限超過（1 人 / 同じ接続元 / 全体）・他人の星の上書き・レート制限などで断った操作。
+  // hello の処理中にあふれたものは welcome の直後に届く。クライアントは自分の画面の星 / 線を取り消す
   | { t: "reject"; kind: "star" | "link"; id: string }
   | { t: "ps"; d: PresenceTuple[] }
   | { t: "pulse"; x: number; y: number; c: number }
   | ({ t: "star" } & StarData)
   | { t: "unstar"; id: string }
-  | { t: "admire"; id: string; ts: number }
+  | { t: "admire"; id: string; ts: number } // 星の位置が視界内の人にだけ届く
   | ({ t: "link" } & LinkData)
   | { t: "unlink"; id: string }
   | { t: "leave"; id: string };
