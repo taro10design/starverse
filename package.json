@@ -15,6 +15,7 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
     "loadtest": "node scripts/loadtest.mjs",
+    "latency": "node scripts/latency.mjs",
     "e2e": "node scripts/e2e.mjs",
     "deploy": "npm run build && wrangler pages deploy client/dist --project-name uchu",
     "deploy:server": "wrangler deploy"
