@@ -6,8 +6,8 @@
 
 - [ ] **実機で確認する**: [qa/device-checklist.md](qa/device-checklist.md) の全項目（iOS Safari / Android Chrome / デスクトップ）。いまは全て「未確認」。ローカルのブラウザ操作では確認できない触覚・音・実際のタッチ・電波切れを含む
 - [ ] **エッジのレート制限ルールを設定する**（下の「エッジのレート制限ルールの設定手順」）。Worker の接続頻度の制限（`CONNECT_LIMITER`）は場所ごとの近似なので、エッジのルールと併用する
-- [ ] **Rate Limiting バインディング（`CONNECT_LIMITER`）が今のプランで使えるか確かめる**: 公式資料にプランの記載が無かった。`wrangler deploy` が失敗する、または本番で 429 が一度も出ないなら、`wrangler.jsonc` の `ratelimits` を消す（コードはバインディングが無ければ制限しない）。60 秒に 20 回という数は、NAT の内側の複数人を見て本番で調整する
-- [ ] **空の中の上限の数値を本番で見直す**: 同じ IP の同時接続 8 本・hello 前の接続 20 本・新しい星と線は部屋全体で 1 分に 120 個（`server/src/config.ts`。[ADR 0009](adr/0009-prefer-proven-components.md) の 4 回目のレビューの追記）。学校・会社の NAT の内側から大勢が入るなら、IP ごとの 8 本は足りない
+- [ ] **Rate Limiting バインディング（`CONNECT_LIMITER`）が今のプランで使えるか確かめる**: 公式資料にプランの記載が無かった。`wrangler deploy` が失敗する、または本番で 429 が一度も出ないなら、`wrangler.jsonc` の `ratelimits` を消す（コードはバインディングが無ければ制限しない）。60 秒に 60 回という数は、NAT の内側の複数人を見て本番で調整する
+- [ ] **空の中の上限の数値を本番で見直す**: 同じ IP の同時接続 32 本・hello 前の接続 20 本・新しい星と線は部屋全体で 1 分に 120 個（`server/src/config.ts`。[ADR 0009](adr/0009-prefer-proven-components.md) の 4 回目のレビューの追記）。学校・会社の NAT の内側から 32 人を超えて入るなら、さらに広げる
 - [ ] **Cloudflare の実環境で負荷を測る**: 今の数値はローカルの workerd で、絶対値ではない。本番とは別名の検証用 Worker で、CPU 時間・遅延・帯域を測る
 
 ## スケールの改善

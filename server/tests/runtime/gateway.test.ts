@@ -90,9 +90,9 @@ describe("接続頻度の制限（CONNECT_LIMITER）", () => {
   it("同じ IP から連続で接続すると 429 になり、別の IP は影響を受けない", async () => {
     const ip = "198.51.100.250";
     // 不許可の Origin（403）で数える。Durable Object に届かないので接続の後片付けが要らない。
-    // 制限の窓の境目をまたいでも 1 つの窓で上限（60 秒に 20 回）を超えるよう、上限の 2 倍 + 1 回送る
+    // 制限の窓の境目をまたいでも 1 つの窓で上限（60 秒に 60 回）を超えるよう、上限の 2 倍 + 1 回送る
     const statuses: number[] = [];
-    for (let i = 0; i < 41; i++) {
+    for (let i = 0; i < 121; i++) {
       const res = await SELF.fetch(`${BASE}/ws`, {
         headers: { Upgrade: "websocket", "CF-Connecting-IP": ip, Origin: "https://evil.example" },
       });

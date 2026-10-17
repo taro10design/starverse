@@ -58,8 +58,24 @@ function isLoopback(ip: string): boolean {
   return ip.startsWith("127.") || ip === "::1" || ip.startsWith("::ffff:127.");
 }
 
+// 接続元を数える単位（接続頻度と、空の中の同時接続数で共通）。IPv6 は 1 つの回線に /64 が割り当てられ、末尾 64 ビットは端末が自由に変えられるので、/64 ごとに数える。
+// IPv4 を埋め込んだ形（::ffff:a.b.c.d）は IPv4 として数える
+export function addressKey(ip: string): string {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (mapped) return mapped[1];
+  if (!ip.includes(":")) return ip;
+  const [head = "", tail = ""] = ip.toLowerCase().split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = ip.includes("::")
+    ? [...left, ...Array<string>(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right]
+    : left;
+  const prefix = groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, ""));
+  return `${prefix.join(":")}::/64`;
+}
+
 export async function allowConnectRate(limiter: ConnectLimiter | undefined, ip: string | null): Promise<boolean> {
   if (limiter === undefined || !ip || isLoopback(ip)) return true;
-  const { success } = await limiter.limit({ key: CONNECT_LIMIT_KEY_PREFIX + ip });
+  const { success } = await limiter.limit({ key: CONNECT_LIMIT_KEY_PREFIX + addressKey(ip) });
   return success;
 }

@@ -21,6 +21,7 @@ import type { ServerMessage } from "../../shared/protocol";
 import { LIMITS, RATE, sendMsFor } from "./config";
 import type { Env } from "./env";
 import { dispatch, type BroadcastOptions, type Conn, type Member, type RoomApi } from "./handlers";
+import { addressKey } from "./gateway";
 import { ownerFromUid } from "./identity";
 import {
   classify,
@@ -115,11 +116,12 @@ export class Universe extends Server<Env> implements RoomApi {
     if (this.count() >= LIMITS.roomCapacity) {
       return new Response("room full", { status: 503, headers: { "x-room-full": "1" } });
     }
-    // hello 前の接続が多すぎる。次の空には回さない（x-room-full を付けない）
+    // hello 前の接続が多すぎる。次の空に回す（1 つの空の別枠で、サイト全体の新しい接続を止めさせない）
     if (this.pending.size >= LIMITS.maxPendingConnections) {
-      return new Response("too many pending connections", { status: 503 });
+      return new Response("too many pending connections", { status: 503, headers: { "x-room-full": "1" } });
     }
-    const ip = request.headers.get("CF-Connecting-IP");
+    const rawIp = request.headers.get("CF-Connecting-IP");
+    const ip = rawIp ? addressKey(rawIp) : null;
     if (ip !== null && this.ips.count(ip) >= LIMITS.maxConnsPerIp) {
       return new Response("too many connections from this address", { status: 429 });
     }
@@ -137,8 +139,9 @@ export class Universe extends Server<Env> implements RoomApi {
     this.live.set(ws, conn);
     this.track(conn);
     // fetch で確かめてから受け入れるまでの間に、同じ接続元の接続が重なって上限を超えたときは切る
-    const ip = ctx.request.headers.get("CF-Connecting-IP");
-    if (ip === null) return;
+    const rawIp = ctx.request.headers.get("CF-Connecting-IP");
+    if (!rawIp) return;
+    const ip = addressKey(rawIp);
     if (this.ips.tryAdd(ip)) this.ipOf.set(ws, ip);
     else this.close(conn, 1013, "too many connections from this address");
   }

@@ -1,3 +1,4 @@
+import { COORD_MAX } from "../../shared/limits";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "../../shared/protocol";
 import type { Network } from "../src/network";
@@ -219,6 +220,15 @@ describe("parseServerMessage", () => {
 });
 
 describe("Universe", () => {
+  it("通信仕様の範囲（絶対値が COORD_MAX 以下）の外には星を置かない（保存しても再読み込みで捨てられるため）", () => {
+    const { u, sent } = setup();
+    u.ownerId = "a".repeat(32);
+    expect(u.placeStar(COORD_MAX + 1, 0, 0)).toBeNull();
+    expect(u.placeStar(0, -COORD_MAX - 1, 0)).toBeNull();
+    expect(sent).toHaveLength(0);
+    expect(u.placeStar(COORD_MAX, -COORD_MAX, 0)).not.toBeNull();
+  });
+
   it("星を置くと色つきでサーバーへ送る（uid は載せない）。by は持ち主 ID。幽霊からの復活は同じ id と幽霊の色", () => {
     const { u, sent, dispatch } = setup();
     dispatch(welcome());

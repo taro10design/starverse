@@ -1,7 +1,7 @@
 // 少数の接続で部屋の容量・枠を使い切る攻撃への備え（4 回目のレビュー）。黒箱テスト。
-// - hello 前の接続は別枠（maxPendingConnections = 20）。超えたら 503（x-room-full なし。次の空に回さない）
+// - hello 前の接続は別枠（maxPendingConnections = 20）。超えたら次の空に回す（1 つの空の別枠で、サイト全体を止めさせない）
 // - 満員の判定・送信間隔は hello 済みの人だけで数える
-// - 同じ接続元（IP）の同時接続数は空ごとに 8 まで（429）
+// - 同じ接続元（IP）の同時接続数は空ごとに 32 まで（429。学校や会社の NAT の内側の人数を見込む）
 // - 部屋全体の新しい星の作成速度（1 分に 120 個）を超えたら reject
 // - レート制限で読まずに捨てた星にも reject が返る
 // - hello 済みの接続の、読めない JSON・知らない t は違反として数える
@@ -15,7 +15,7 @@ import type { ServerMessage } from "../../../shared/protocol";
 
 // サーバーの設定（server/src/config.ts）と同じ値。実装には依存しない
 const MAX_PENDING = 20;
-const MAX_CONNS_PER_IP = 8;
+const MAX_CONNS_PER_IP = 32;
 const MAX_NEW_STARS_PER_MINUTE = 120;
 const MAX_STARS_PER_USER = 64;
 const MAX_VIOLATIONS = 20;
@@ -107,18 +107,17 @@ async function roomStats(): Promise<{ connections: number; pending: number }> {
 const newId = () => "t-" + crypto.randomUUID().slice(0, 8);
 
 describe("hello 前の接続の別枠", () => {
-  it(`hello 前の接続が ${MAX_PENDING} 本あると次は 503（x-room-full なし）。1 本が hello を済ませると、また入れる`, async () => {
+  it(`hello 前の接続が ${MAX_PENDING} 本あると、次の接続は次の空に回る。1 本が hello を済ませると、また先頭の空に入れる`, async () => {
     const waiting: Client[] = [];
     for (let i = 0; i < MAX_PENDING; i++) waiting.push(await open());
-    const over = await upgrade(freshIp());
-    expect(over.status).toBe(503);
-    expect(over.headers.get("x-room-full")).toBeNull();
-    await over.body?.cancel();
+    const spilled = await open();
+    expect(spilled.closed).toBe(false);
+    expect(await roomStats()).toMatchObject({ pending: MAX_PENDING });
 
     waiting[0].send({ t: "hello", uid: crypto.randomUUID() });
     await until(() => waiting[0].of("welcome")[0], 3000, "welcome");
-    const again = await open();
-    expect(again.closed).toBe(false);
+    await open();
+    expect(await roomStats()).toMatchObject({ connections: 1, pending: MAX_PENDING });
   });
 
   it("満員の判定と送信間隔は hello 済みの人だけで数える（hello 前の接続が何本あっても 1 人なら 1000ms）", async () => {

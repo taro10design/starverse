@@ -115,6 +115,28 @@ describe("allowConnectRate", () => {
     expect(f.keys).toEqual(["ws:203.0.113.5"]);
   });
 
+  it("IPv6 は /64 ごとに数える（1 つの回線に /64 が割り当てられ、末尾は端末が自由に変えられるため）", async () => {
+    const f = fakeLimiter(true);
+    for (const ip of [
+      "2001:db8:0:1::5",
+      "2001:DB8:0:1:aaaa:bbbb:cccc:dddd",
+      "2001:0db8:0000:0001::",
+      "2001:db8:0:2::5",
+    ]) {
+      await allowConnectRate(f.limiter, ip);
+    }
+    expect(f.keys).toEqual([
+      "ws:2001:db8:0:1::/64",
+      "ws:2001:db8:0:1::/64",
+      "ws:2001:db8:0:1::/64",
+      "ws:2001:db8:0:2::/64",
+    ]);
+    // 先頭が省略された形、IPv4 を埋め込んだ形も同じ規則で読む
+    await allowConnectRate(f.limiter, "::ffff:203.0.113.5");
+    await allowConnectRate(f.limiter, "2001:db8::");
+    expect(f.keys.slice(4)).toEqual(["ws:203.0.113.5", "ws:2001:db8:0:0::/64"]);
+  });
+
   it("超えたら通さない", async () => {
     const f = fakeLimiter(false);
     expect(await allowConnectRate(f.limiter, "203.0.113.5")).toBe(false);

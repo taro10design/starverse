@@ -19,10 +19,10 @@ export const LIMITS = {
   // --- 部屋（空）のスケール ---
   roomCapacity: 300, // 1つの空に入れる人数（hello 済みの人だけを数える）。超えたら次の空へ振り分ける
   maxRooms: 8, // 振り分け先の空の数（space, space-2, ...）
-  // hello 前の接続の枠（空ごと）。満員の判定とは別に数え、超えたら 503（次の空には回さない）
+  // hello 前の接続の枠（空ごと）。満員の判定とは別に数え、超えたら 503 と x-room-full で次の空に回す
   maxPendingConnections: 20,
-  // 同じ接続元（IP）からの同時接続数（空ごと）。メモリ上だけで数える（IP は保存しない）
-  maxConnsPerIp: 8,
+  // 同じ接続元（IP）からの同時接続数（空ごと）。学校や会社の NAT の内側の人数を見込む。メモリ上だけで数える（IP は保存しない）
+  maxConnsPerIp: 32,
 
   // --- 受信量の予算 ---
   // Cloudflare の公式資料では、1 つの Durable Object は検証つきの処理で約 500〜750 req/s。

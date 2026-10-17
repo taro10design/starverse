@@ -4,7 +4,7 @@ import { randomUUID } from "./util";
 import { isGhost, isLinkData, isStarData, validItems } from "./validate";
 import type { RGB } from "./constants";
 import type { StarData, LinkData, ClientMessage } from "../../shared/protocol";
-import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER, UID_PATTERN } from "../../shared/limits";
+import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER, UID_PATTERN, COORD_MAX } from "../../shared/limits";
 
 const PEER_STALE_MS = 30_000; // これだけ位置が届かなかった人は、いなくなったものとして消す
 const REVIVED_TTL_MS = 30_000; // 復活で消した幽霊を、サーバーに断られたときのために覚えておく時間
@@ -161,6 +161,9 @@ export class Universe {
   placeStar(nx: number, ny: number, color: number, ghost?: Pick<Star, "id" | "x" | "y" | "c"> | null): Star | null {
     const by = this.ownerId;
     if (by === null || this.countMine(this.stars.values()) >= MAX_STARS_PER_USER) return null;
+    // 通信仕様の範囲の外には置かない（サーバーは捨て、ソロでも保存データの読み込みで捨てられて消えるため）
+    const [px, py] = ghost ? [ghost.x, ghost.y] : [nx, ny];
+    if (Math.abs(px) > COORD_MAX || Math.abs(py) > COORD_MAX) return null;
     const s = ghost
       ? { id: ghost.id, x: ghost.x, y: ghost.y, c: ghost.c, by, ts: Date.now() }
       : { id: randomUUID().slice(0, 12), x: nx, y: ny, c: color, by, ts: Date.now() };

@@ -12,5 +12,5 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Universe"] }],
   // 接続元（IP）ごとの /ws の接続頻度（60 秒に 20 回）。場所ごとの近似（公式資料）。
   // 使えない環境では、この項目を消せば制限なしで動く（server/src/gateway.ts の allowConnectRate）
-  "ratelimits": [{ "name": "CONNECT_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }],
+  "ratelimits": [{ "name": "CONNECT_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }],
 }
