@@ -1,6 +1,7 @@
 import { PALETTES, autopilot } from "./constants";
 import type { Palette } from "./constants";
 import { storage } from "./storage";
+import { clampColor } from "./validate";
 
 // ---------------------------------------------------------------------------
 // Player — 自分の光。バネでターゲットへ向かう
@@ -14,14 +15,14 @@ export class Player {
   colorIndex = 0;
 
   constructor() {
-    this.colorIndex = Math.min(Number(storage.get("uchu-color") ?? 0) || 0, PALETTES.length - 1);
+    this.colorIndex = clampColor(storage.get("uchu-color")); // 壊れた値でもパレットの範囲に収める
   }
   get palette(): Palette {
     return PALETTES[this.colorIndex];
   }
   setColor(i: number) {
-    this.colorIndex = i;
-    storage.set("uchu-color", String(i));
+    this.colorIndex = clampColor(i);
+    storage.set("uchu-color", String(this.colorIndex));
   }
   update(dt: number, t: number) {
     const tgt = this.target || autopilot(t);

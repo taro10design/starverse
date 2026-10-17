@@ -1,7 +1,11 @@
 import { PALETTES, CROWD_R, GHOST_TTL, ttlFor } from "./constants";
 import { storage } from "./storage";
+import { isGhost, isLinkData, isStarData, validItems } from "./validate";
 import type { RGB } from "./constants";
 import type { StarData, LinkData, ClientMessage } from "../../shared/protocol";
+import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER, UID_PATTERN } from "../../shared/limits";
+
+const PEER_STALE_MS = 30_000; // これだけ位置が届かなかった人は、いなくなったものとして消す
 
 // ---------------------------------------------------------------------------
 // Universe — 星・線・幽霊・他人・波紋の状態と生態系ルール
@@ -25,6 +29,7 @@ export interface Peer {
   rx: number; // 補間された表示位置
   ry: number;
   c?: number;
+  seen: number; // 最後に位置が届いた時刻（Date.now()）
 }
 export interface Pulse {
   x: number;
@@ -40,7 +45,10 @@ export interface Pair {
 }
 
 export class Universe {
-  readonly uid = Universe.loadUid();
+  readonly uid = Universe.loadUid(); // 持ち主の鍵。秘密なので hello と鍵リンクにしか使わない
+  // 持ち主 ID（星の by と比べて「自分の星か」を判定する）。オンラインでは welcome.me で決まり、
+  // それまでは null（星も線も作れない）。ソロでは uid と同じ
+  ownerId: string | null;
   myId: string | null = null; // サーバーが割り当てた接続 id（他の人の位置の中から自分を除くのに使う）
   readonly stars = new Map<string, Star>();
   readonly links = new Map<string, LinkData>(); // 誰かが手で引いた線
@@ -55,25 +63,42 @@ export class Universe {
     private solo: boolean,
     private send: (msg: ClientMessage) => void,
   ) {
+    this.ownerId = solo ? this.uid : null;
     this.loadGhosts();
     if (solo) this.loadSolo();
   }
 
-  // このブラウザ固有の持ち主ID。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）
+  // このブラウザ固有の持ち主の鍵。?key= で持ち越せる（Discord等の使い捨てブラウザ対策）。
+  // 鍵はアドレスバーに残すと画面共有や履歴から漏れるので、保存したら URL から消す
   static loadUid(): string {
-    let uid = new URLSearchParams(location.search).get("key") ?? storage.get("uchu-uid");
-    if (!uid || !/^[\w-]{8,64}$/.test(uid)) uid = crypto.randomUUID();
+    const params = new URLSearchParams(location.search);
+    const fromUrl = params.get("key");
+    let uid = fromUrl ?? storage.get("uchu-uid");
+    if (!uid || !UID_PATTERN.test(uid)) uid = crypto.randomUUID();
     storage.set("uchu-uid", uid);
+    if (fromUrl !== null) {
+      // URLSearchParams.toString() は `?solo` を `?solo=` に変えるので、key の部分だけを文字列から除く
+      const rest = location.search
+        .slice(1)
+        .split("&")
+        .filter((part) => part !== "" && part.split("=")[0] !== "key");
+      history.replaceState(null, "", location.pathname + (rest.length ? "?" + rest.join("&") : "") + location.hash);
+    }
     return uid;
   }
 
   isMine(s: { by: string }): boolean {
-    return s.by === this.uid;
+    return this.ownerId !== null && s.by === this.ownerId;
+  }
+  private countMine(items: Iterable<{ by: string }>): number {
+    let n = 0;
+    for (const it of items) if (this.isMine(it)) n++;
+    return n;
   }
 
   // --- 永続化 ---
   loadGhosts() {
-    for (const g of storage.getJSON<Ghost[]>("uchu-ghosts") ?? []) {
+    for (const g of validItems(storage.getJSON("uchu-ghosts"), isGhost)) {
       if (Date.now() - g.gone < GHOST_TTL) this.ghosts.set(g.id, g);
     }
   }
@@ -82,9 +107,10 @@ export class Universe {
   }
   // ソロモード：自分の星は localStorage に残る（消えない個人の空）
   loadSolo() {
-    const saved = storage.getJSON<{ stars?: Star[]; links?: LinkData[] }>("uchu-solo");
-    for (const s of saved?.stars ?? []) this.stars.set(s.id, s);
-    for (const l of saved?.links ?? []) this.links.set(l.id, l);
+    const saved = storage.getJSON("uchu-solo");
+    const fields: { stars?: unknown; links?: unknown } = typeof saved === "object" && saved !== null ? saved : {};
+    for (const s of validItems(fields.stars, isStarData)) this.stars.set(s.id, s);
+    for (const l of validItems(fields.links, isLinkData)) this.links.set(l.id, l);
     this.pairsDirty = true;
   }
   saveSolo() {
@@ -96,14 +122,19 @@ export class Universe {
   }
 
   // --- 星 ---
-  placeStar(nx: number, ny: number, color: number, ghost?: Pick<Star, "id" | "x" | "y" | "c"> | null): Star {
+  // 星を置いてサーバーへ送る。持ち主 ID が未確定（welcome の前）か、自分の星が上限に達していたら置かずに null。
+  // ghost を渡すと同じ id・位置・色で置き直す（幽霊の復活・アンドゥ）
+  placeStar(nx: number, ny: number, color: number, ghost?: Pick<Star, "id" | "x" | "y" | "c"> | null): Star | null {
+    const by = this.ownerId;
+    if (by === null || this.countMine(this.stars.values()) >= MAX_STARS_PER_USER) return null;
     const s = ghost
-      ? { id: ghost.id, x: ghost.x, y: ghost.y, c: ghost.c, by: this.uid, ts: Date.now() } // 幽霊の復活
-      : { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: color, by: this.uid, ts: Date.now() };
+      ? { id: ghost.id, x: ghost.x, y: ghost.y, c: ghost.c, by, ts: Date.now() }
+      : { id: crypto.randomUUID().slice(0, 12), x: nx, y: ny, c: color, by, ts: Date.now() };
     this.stars.set(s.id, s);
+    if (this.ghosts.delete(s.id)) this.saveGhosts(); // 生きてるなら幽霊は要らない
     this.pairsDirty = true;
     this.saveSolo();
-    this.send({ t: "star", id: s.id, x: s.x, y: s.y, uid: this.uid });
+    this.send({ t: "star", id: s.id, x: s.x, y: s.y, c: s.c });
     return s;
   }
   deleteStar(s: Star, noGhost?: boolean) {
@@ -115,7 +146,14 @@ export class Universe {
     this.dropLinksTouching(s.id);
     this.pairsDirty = true;
     this.saveSolo();
-    this.send({ t: "unstar", id: s.id, uid: this.uid });
+    this.send({ t: "unstar", id: s.id });
+  }
+  // サーバーが断った星を、自分の画面からだけ取り消す（unstar は送らない。幽霊にもしない）
+  rollbackStar(id: string) {
+    if (!this.stars.delete(id)) return;
+    this.dropLinksTouching(id);
+    this.pairsDirty = true;
+    this.saveSolo();
   }
   // 他人の星をタップ＝きらめきを送る。寿命がリセットされる
   admire(s: Star) {
@@ -141,24 +179,32 @@ export class Universe {
   }
 
   // --- 線 ---
+  // 線を引いてサーバーへ送る。同じ 2 点の線がある・持ち主 ID が未確定・自分の線が上限なら null
   addLink(a: string, b: string): LinkData | null {
-    if (!a || !b || a === b) return null;
+    const by = this.ownerId;
+    if (!a || !b || a === b || by === null) return null;
     for (const l of this.links.values()) {
       if ((l.a === a && l.b === b) || (l.a === b && l.b === a)) return null;
     }
-    const l = { id: crypto.randomUUID().slice(0, 12), a, b, by: this.uid, ts: Date.now() };
-    this.restoreLink(l);
-    return l;
+    const l = { id: crypto.randomUUID().slice(0, 12), a, b, by, ts: Date.now() };
+    return this.restoreLink(l) ? l : null;
   }
-  restoreLink(l: LinkData) {
+  // 線を（アンドゥなどで）引き直す。自分の線が上限に達していたら引かずに false
+  restoreLink(l: LinkData): boolean {
+    if (this.countMine(this.links.values()) >= MAX_LINKS_PER_USER) return false;
     this.links.set(l.id, l);
     this.saveSolo();
-    this.send({ t: "link", id: l.id, a: l.a, b: l.b, uid: this.uid });
+    this.send({ t: "link", id: l.id, a: l.a, b: l.b });
+    return true;
   }
   removeLink(id: string) {
     this.links.delete(id);
     this.saveSolo();
-    this.send({ t: "unlink", id, uid: this.uid });
+    this.send({ t: "unlink", id });
+  }
+  // サーバーが断った線を、自分の画面からだけ取り消す（unlink は送らない）
+  rollbackLink(id: string) {
+    if (this.links.delete(id)) this.saveSolo();
   }
   dropLinksTouching(starId: string) {
     for (const [lid, l] of this.links) {
@@ -181,9 +227,8 @@ export class Universe {
     }
     return best;
   }
-  reviveGhost(g: Ghost): Star {
-    this.ghosts.delete(g.id);
-    this.saveGhosts();
+  // 幽霊を同じ id・位置・幽霊の色で復活させる。置けなければ（上限など）幽霊のまま null
+  reviveGhost(g: Ghost): Star | null {
     return this.placeStar(g.x, g.y, g.c, g);
   }
   forgetGhost(g: Ghost) {
@@ -212,8 +257,26 @@ export class Universe {
       if (p.life <= 0) this.pulses.splice(i, 1);
     }
   }
-  updatePeers(dt: number) {
-    for (const p of this.peers.values()) {
+  // 他の人の位置を受け取った（新しい人なら補間の起点もそこにする）
+  setPeer(id: string, x: number, y: number, c: number, now = Date.now()) {
+    const p = this.peers.get(id);
+    if (p) {
+      p.x = x;
+      p.y = y;
+      p.c = c;
+      p.seen = now;
+    } else {
+      this.peers.set(id, { x, y, rx: x, ry: y, c, seen: now });
+    }
+  }
+  // 表示位置を補間で追いかける。leave を取りこぼした人は、しばらく位置が届かなければ消す
+  // （粗い一覧は人数が多いと数秒おきなので、余裕を持たせる）
+  updatePeers(dt: number, now = Date.now()) {
+    for (const [id, p] of this.peers) {
+      if (now - p.seen > PEER_STALE_MS) {
+        this.peers.delete(id);
+        continue;
+      }
       p.rx += (p.x - p.rx) * Math.min(1, 0.12 * dt);
       p.ry += (p.y - p.ry) * Math.min(1, 0.12 * dt);
     }

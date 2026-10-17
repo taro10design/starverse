@@ -52,6 +52,20 @@ export class App {
   }
 
   // --- UI / 入力から呼ばれる、複数クラスにまたがる操作 ---
+  // サーバーへ送る操作（星・線・消去・アンドゥ）をしてよいか。ソロは常に可。
+  // オンラインは、つながっていて welcome で持ち主 ID が分かっている間だけ
+  canEdit(): boolean {
+    return SOLO || this.network.ready;
+  }
+
+  // アンドゥ / リドゥもサーバーへ送る操作なので、切れている間はしない
+  undo() {
+    if (this.canEdit()) this.history.undo();
+  }
+  redo() {
+    if (this.canEdit()) this.history.redo();
+  }
+
   // 自分の光を中心に、倍率も初期値へ戻す
   focusLight() {
     this.camera.focusOn(this.player.x, this.player.y);
@@ -59,7 +73,8 @@ export class App {
 
   // 消モードでもう一度押す＝自分の星を全部消す
   clearMine() {
-    const { universe, history, player, ui } = this;
+    if (!this.canEdit()) return;
+    const { universe, history, ui } = this;
     const list: ReturnType<typeof snap>[] = [];
     for (const s of [...universe.stars.values()]) {
       if (universe.isMine(s)) {
@@ -70,7 +85,7 @@ export class App {
     if (!list.length) return;
     ui.haptic();
     history.pushOp({
-      undo: () => list.forEach((st) => universe.placeStar(st.x, st.y, player.colorIndex, st)),
+      undo: () => list.forEach((st) => universe.placeStar(st.x, st.y, st.c, st)),
       redo: () =>
         list.forEach((st) => {
           const s = universe.stars.get(st.id);
@@ -87,10 +102,11 @@ export class App {
   }
 
   // 幽霊を全部復活（復活した数を返す）
+  // 上限で置けなかった幽霊は幽霊のまま残る
   reviveAllGhosts(): number {
+    if (!this.canEdit()) return 0;
     const { universe, history } = this;
-    const gs = [...universe.ghosts.values()].map((g) => ({ ...g }));
-    for (const g of gs) universe.reviveGhost(g);
+    const gs = [...universe.ghosts.values()].map((g) => ({ ...g })).filter((g) => universe.reviveGhost(g));
     if (gs.length) {
       this.ui.haptic();
       history.pushOp({

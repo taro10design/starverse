@@ -37,6 +37,8 @@ export interface ToolContext {
   history: History;
   hit: HitTester;
   feedback: Feedback;
+  // サーバーへ送る操作（星・線・消去・きらめき）をしてよいか。オンラインで接続が切れている間は false。ソロは常に true
+  canEdit(): boolean;
 }
 
 export interface Tool {

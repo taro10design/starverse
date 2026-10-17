@@ -29,6 +29,8 @@ beforeAll(async () => {
   };
 });
 
+const ME = "owner-me";
+
 function setup() {
   store.clear();
   const sent: { t: string }[] = [];
@@ -36,8 +38,10 @@ function setup() {
   camera.resize(1000, 700);
   const player = new mod.Player();
   const universe = new mod.Universe(false, (m) => sent.push(m));
+  universe.ownerId = ME; // welcome を受け取った状態
   const history = new mod.History(vi.fn());
   const feedback = { ping: vi.fn(), haptic: vi.fn() };
+  const online = { editable: true }; // false にすると「接続が切れている」状態
   const ctx: ToolContext = {
     camera,
     player,
@@ -45,6 +49,7 @@ function setup() {
     history,
     hit: new mod.tools.HitTester(camera, universe),
     feedback,
+    canEdit: () => online.editable,
   };
   const tools = mod.tools.createTools(ctx);
   const pushOp = vi.spyOn(history, "pushOp");
@@ -56,7 +61,9 @@ function setup() {
   // スクリーン座標に自分の星 / 他人の星を置く
   const mine = (sx: number, sy: number) => {
     const p = at(sx, sy);
-    return universe.placeStar(p.wx, p.wy, 0);
+    const s = universe.placeStar(p.wx, p.wy, 0);
+    if (!s) throw new Error("星が置けない");
+    return s;
   };
   const others = (id: string, sx: number, sy: number) => {
     const p = at(sx, sy);
@@ -64,7 +71,7 @@ function setup() {
     universe.stars.set(id, s);
     return s;
   };
-  return { ctx, tools, camera, player, universe, history, feedback, sent, pushOp, at, mine, others };
+  return { ctx, tools, camera, player, universe, history, feedback, sent, pushOp, at, mine, others, online };
 }
 
 // 押して・なぞって・離す
@@ -141,6 +148,61 @@ describe("star ツール", () => {
     expect(pushOp).not.toHaveBeenCalled();
   });
 
+  it("置いた星は今の色で、色ごとサーバーへ送る", () => {
+    const { tools, universe, player, sent, at } = setup();
+    player.setColor(4);
+    tools.star.down(at(300, 300));
+    tools.star.up(at(300, 300), true);
+    const s = [...universe.stars.values()][0];
+    expect(s.c).toBe(4);
+    expect(sent).toContainEqual({ t: "star", id: s.id, x: s.x, y: s.y, c: 4 });
+  });
+
+  it("なぞりの連続配置は 1 秒に 20 個まで（間引く）", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const { tools, universe, at } = setup();
+      tools.star.down(at(10, 100));
+      for (let i = 1; i <= 40; i++) tools.star.move(at(10 + i * 11, 100), true);
+      expect(universe.stars.size).toBe(20);
+      vi.setSystemTime(11_001);
+      tools.star.move(at(10 + 41 * 11, 100), true);
+      expect(universe.stars.size).toBe(21);
+      tools.star.up(at(0, 0), false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("自分の星が上限に達していたら置かず、履歴も積まない", async () => {
+    const { MAX_STARS_PER_USER } = await import("../../shared/limits");
+    const { tools, universe, pushOp, at } = setup();
+    for (let i = 0; i < MAX_STARS_PER_USER; i++) universe.placeStar(5 + i * 0.01, 5, 0); // 画面の外
+    tools.star.down(at(300, 300));
+    tools.star.move(at(320, 300), true);
+    tools.star.up(at(320, 300), false);
+    expect(universe.stars.size).toBe(MAX_STARS_PER_USER);
+    expect(pushOp).not.toHaveBeenCalled();
+  });
+
+  it("接続が切れている間（canEdit が false）は置かない・消さない・きらめかない", () => {
+    const { tools, universe, sent, pushOp, at, mine, others, online } = setup();
+    const m = mine(400, 400);
+    others("o1", 500, 300);
+    sent.length = 0;
+    online.editable = false;
+    drag(tools.star, [at(100, 100), at(130, 100)]);
+    tools.star.down(at(400, 400));
+    tools.star.up(at(400, 400), true);
+    tools.star.down(at(500, 300));
+    tools.star.up(at(500, 300), true);
+    expect(universe.stars.size).toBe(2);
+    expect(universe.stars.has(m.id)).toBe(true);
+    expect(sent).toEqual([]);
+    expect(pushOp).not.toHaveBeenCalled();
+  });
+
   it("cancel で途中のバッチを確定し、その後のなぞりでは置かない", () => {
     const { tools, universe, pushOp, at } = setup();
     tools.star.down(at(100, 100));
@@ -199,6 +261,41 @@ describe("line ツール", () => {
     expect(tools.line.linkPreview?.()).toBeNull();
   });
 
+  it("接続が切れている間（canEdit が false）は線を引かない", () => {
+    const { tools, universe, pushOp, at, mine, online } = setup();
+    mine(200, 200);
+    mine(400, 200);
+    tools.line.down(at(200, 200));
+    online.editable = false; // 引いている途中で切れた
+    tools.line.up(at(400, 200), false);
+    drag(tools.line, [at(200, 200), at(400, 200)]);
+    expect(universe.links.size).toBe(0);
+    expect(pushOp).not.toHaveBeenCalled();
+  });
+
+  it("自分の線が上限に達していたら引かない", async () => {
+    const { MAX_LINKS_PER_USER } = await import("../../shared/limits");
+    const { tools, universe, pushOp, at, mine } = setup();
+    // 画面の外の星どうしで上限まで引く
+    const far = Array.from({ length: 16 }, (_, i) => {
+      const s = universe.placeStar(5 + i * 0.01, 5, 0);
+      if (!s) throw new Error("星が置けない");
+      return s;
+    });
+    let n = 0;
+    for (let i = 0; i < far.length && n < MAX_LINKS_PER_USER; i++) {
+      for (let j = i + 1; j < far.length && n < MAX_LINKS_PER_USER; j++) {
+        if (universe.addLink(far[i].id, far[j].id)) n++;
+      }
+    }
+    expect(n).toBe(MAX_LINKS_PER_USER);
+    mine(200, 200);
+    mine(400, 200);
+    drag(tools.line, [at(200, 200), at(400, 200)]);
+    expect(universe.links.size).toBe(MAX_LINKS_PER_USER);
+    expect(pushOp).not.toHaveBeenCalled();
+  });
+
   it("cancel で引き途中の線が消え、その後 up しても線はできない", () => {
     const { tools, universe, at, mine } = setup();
     mine(200, 200);
@@ -212,18 +309,52 @@ describe("line ツール", () => {
 });
 
 describe("erase ツール", () => {
-  it("なぞった星を誰の星でも消し、全部で履歴1件。undo で戻り、redo で再び消える", () => {
+  it("なぞった星を誰の星でも消す。履歴は自分の星の分だけ1件にまとまり、undo で自分の星だけ戻る", () => {
     const { tools, universe, history, pushOp, at, mine, others } = setup();
-    mine(100, 100);
+    const m = mine(100, 100);
     others("o1", 200, 100);
     mine(600, 600); // なぞっていない星は残る
     drag(tools.erase, [at(100, 100), at(150, 100), at(200, 100)]);
     expect(universe.stars.size).toBe(1);
     expect(pushOp).toHaveBeenCalledTimes(1);
     history.undo();
-    expect(universe.stars.size).toBe(3);
+    expect(universe.stars.size).toBe(2);
+    expect(universe.stars.has(m.id)).toBe(true);
+    expect(universe.stars.has("o1")).toBe(false); // 復元すると持ち主が自分に移るので戻さない
     history.redo();
     expect(universe.stars.size).toBe(1);
+  });
+
+  it("他人の星だけを消した操作は履歴に積まない（undo で by が自分に変わらない）", () => {
+    const { tools, universe, history, pushOp, at, mine, others } = setup();
+    const m = mine(600, 600);
+    others("o1", 200, 100);
+    drag(tools.erase, [at(200, 100), at(205, 100)]);
+    expect(universe.stars.has("o1")).toBe(false);
+    expect(pushOp).not.toHaveBeenCalled();
+    history.undo();
+    expect(universe.stars.has("o1")).toBe(false);
+    expect([...universe.stars.values()].every((s) => s.id === m.id)).toBe(true);
+  });
+
+  it("消して undo した自分の星は、消したときの色で戻る", () => {
+    const { tools, universe, player, history, at } = setup();
+    const p = at(100, 100);
+    const s = universe.placeStar(p.wx, p.wy, 5);
+    if (!s) throw new Error("星が置けない");
+    player.setColor(1);
+    drag(tools.erase, [at(100, 100)]);
+    history.undo();
+    expect(universe.stars.get(s.id)?.c).toBe(5);
+  });
+
+  it("接続が切れている間（canEdit が false）は消さない", () => {
+    const { tools, universe, pushOp, at, mine, online } = setup();
+    mine(100, 100);
+    online.editable = false;
+    drag(tools.erase, [at(100, 100), at(105, 100)]);
+    expect(universe.stars.size).toBe(1);
+    expect(pushOp).not.toHaveBeenCalled();
   });
 
   it("何も消さなければ履歴を積まず、押していない移動は消費しない", () => {
@@ -301,6 +432,19 @@ describe("move ツール", () => {
     expect(pushOp).toHaveBeenCalledTimes(1);
     history.undo();
     expect(universe.stars.has(s.id)).toBe(true);
+  });
+
+  it("接続が切れている間（canEdit が false）はタップで消さず、幽霊も復活させない", () => {
+    const { tools, universe, pushOp, at, mine, online } = setup();
+    const s = mine(300, 300);
+    const g = mine(500, 300);
+    universe.deleteStar(g);
+    online.editable = false;
+    tools.move.up(at(300, 300), true);
+    tools.move.up(at(500, 300), true);
+    expect(universe.stars.has(s.id)).toBe(true);
+    expect(universe.ghosts.has(g.id)).toBe(true);
+    expect(pushOp).not.toHaveBeenCalled();
   });
 
   it("他人の星をタップするときらめきを送る（消さない）", () => {

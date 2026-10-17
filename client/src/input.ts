@@ -4,6 +4,7 @@ import type { Point } from "./util";
 import type { App } from "./app";
 import { createTools, HitTester } from "./tools";
 import type { Tool, PointerInfo, LinkPreview } from "./tools";
+import { KeyState } from "./keys";
 
 interface PinchState {
   d0: number;
@@ -16,7 +17,10 @@ interface PinchState {
 // Input — ポインタ / タッチ / キーボード
 // ---------------------------------------------------------------------------
 // ポインタの振り分け（ピンチ・パン・ミニマップ・キー・ホイール）だけを持ち、
-// ツールごとの操作は tools/ の各クラスに任せる
+// ツールごとの操作は tools/ の各クラスに任せる。キーの押下状態は keys.ts の KeyState が持つ。
+//
+// キャンバス上のポインタは全て setPointerCapture する（ウィンドウの外で離しても pointerup が届く）。
+// それでも取りこぼした指（lostpointercapture・blur）は片付けて、ツールを cancel する。
 
 export class Input {
   private tools: Record<ToolName, Tool>;
@@ -24,15 +28,15 @@ export class Input {
 
   private pointers = new Map<number, Point>();
   private pinch: PinchState | null = null;
+  // ピンチが始まったジェスチャー。全部の指が離れるまでツールに up を渡さない
+  private gestureCancelled = false;
   private mapDrag = false;
   private downX = 0;
   private downY = 0;
   private downTarget: EventTarget | null = null;
   // PC 向けのカメラ操作
   private panning: { id: number; sx: number; sy: number; cx: number; cy: number } | null = null;
-  private spaceDown = false;
-  private shiftHeld = false; // 押している間はパンが速くなる
-  private keys = new Set<string>(); // 押されている間パンやズームを続けるキー
+  private keys = new KeyState();
 
   constructor(private app: App) {
     const { camera, player, universe, history } = app;
@@ -44,6 +48,7 @@ export class Input {
       hit: new HitTester(camera, universe),
       // ui は Input より後に作られるので、呼ぶ時に解決する
       feedback: { ping: () => app.ui.ping(), haptic: () => app.ui.haptic() },
+      canEdit: () => app.canEdit(),
     });
     this.current = this.tools.move;
   }
@@ -57,16 +62,18 @@ export class Input {
   }
 
   bind() {
+    const { canvas } = this.app;
     addEventListener("pointerdown", (e) => this.handlePointerDown(e));
     addEventListener("pointermove", (e) => this.handlePointerMove(e));
     addEventListener("pointerup", (e) => this.handlePointerUp(e));
     addEventListener("pointercancel", (e) => this.handlePointerCancel(e));
+    canvas.addEventListener("lostpointercapture", (e) => this.handleLostCapture(e));
     addEventListener("wheel", (e) => this.handleWheel(e), { passive: false });
     addEventListener("keydown", (e) => this.handleKeyDown(e));
     addEventListener("keyup", (e) => this.handleKeyUp(e));
-    addEventListener("blur", () => this.releaseKeys()); // ウィンドウから離れたら押しっぱなしを解除
+    addEventListener("blur", () => this.handleBlur()); // ウィンドウから離れたら押しっぱなしを解除
     // 中ボタンの自動スクロールを止める
-    this.app.canvas.addEventListener("mousedown", (e) => {
+    canvas.addEventListener("mousedown", (e) => {
       if (e.button === 1) e.preventDefault();
     });
     addEventListener("contextmenu", (e) => e.preventDefault());
@@ -93,29 +100,34 @@ export class Input {
   }
 
   handlePointerDown(e: PointerEvent) {
-    const { camera, universe, player, network, ui } = this.app;
+    const { camera, universe, player, network, ui, canvas } = this.app;
     this.downTarget = e.target;
-    if (e.target !== this.app.canvas) return;
+    if (e.target !== canvas) return;
+    canvas.setPointerCapture(e.pointerId);
     // Space+ドラッグ / 中ボタン / 右ボタンのドラッグで視点を動かす
-    if (e.button === 1 || e.button === 2 || (e.button === 0 && this.spaceDown)) {
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && this.keys.spaceDown)) {
       this.panning = { id: e.pointerId, sx: e.clientX, sy: e.clientY, cx: camera.cx, cy: camera.cy };
-      this.app.canvas.setPointerCapture?.(e.pointerId);
       this.updateCursor();
       return;
     }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (this.pointers.size === 2) {
-      const [a, b] = [...this.pointers.values()];
-      const m = mid(a, b);
-      const [wx, wy] = camera.screenToWorld(m.x, m.y);
-      this.pinch = { d0: dist(a, b), z0: camera.z, wx, wy };
+    if (this.pointers.size >= 2) {
+      // 2 本目の指でピンチが始まった。1 本目で始めた操作は確定して止め、離したときの up も渡さない
+      if (!this.gestureCancelled) this.current.cancel();
+      this.gestureCancelled = true;
+      if (this.pointers.size === 2) {
+        const [a, b] = [...this.pointers.values()];
+        const m = mid(a, b);
+        const [wx, wy] = camera.screenToWorld(m.x, m.y);
+        this.pinch = { d0: dist(a, b), z0: camera.z, wx, wy };
+      }
       return;
     }
     const p = this.pointerInfo(e);
     this.downX = e.clientX;
     this.downY = e.clientY;
     universe.addPulse(p.wx, p.wy, 1, player.palette.glow);
-    network.send({ t: "pulse", x: p.wx, y: p.wy, c: player.colorIndex });
+    network.send({ t: "pulse", x: p.wx, y: p.wy });
     ui.ping();
     ui.haptic();
     this.current.down(p);
@@ -148,7 +160,8 @@ export class Input {
       return;
     }
     const p = this.pointerInfo(e);
-    if (this.current.move(p, pt !== undefined)) return;
+    // ピンチのあと残った指は、ツールには渡さず光を動かすだけにする
+    if (!this.gestureCancelled && this.current.move(p, pt !== undefined)) return;
     if (this.pointers.size <= 1) {
       player.target = { x: p.wx, y: p.wy };
       camera.free = false;
@@ -161,24 +174,53 @@ export class Input {
       this.updateCursor();
       return;
     }
-    const wasPinch = this.pinch !== null;
-    this.pointers.delete(e.pointerId);
+    const wasPressed = this.pointers.delete(e.pointerId);
     if (this.pointers.size < 2) this.pinch = null;
     this.mapDrag = false;
+    if (this.gestureCancelled) {
+      if (this.pointers.size === 0) this.gestureCancelled = false;
+      return;
+    }
+    if (!wasPressed) return; // キャンバスの外で始まった操作（ボタンなど）や、片付け済みの指
 
-    // タップ＝ピンチでなく・他の指もなく・キャンバス上で押して・ほとんど動いていない
+    // タップ＝他の指もなく・キャンバス上で押して・ほとんど動いていない
     const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-    const tap = !wasPinch && this.pointers.size === 0 && this.downTarget === this.app.canvas && moved <= 12;
+    const tap = this.pointers.size === 0 && this.downTarget === this.app.canvas && moved <= 12;
     this.current.up(this.pointerInfo(e), tap); // tap でなくても呼ぶ（ドラッグ中の操作を確定する）
   }
 
   handlePointerCancel(e: PointerEvent) {
-    if (this.panning && e.pointerId === this.panning.id) {
+    this.releasePointer(e.pointerId);
+  }
+
+  // キャプチャが外れた。普通に離したあと（pointerup で片付け済み）なら何もしない
+  handleLostCapture(e: PointerEvent) {
+    const known = this.pointers.has(e.pointerId) || this.panning?.id === e.pointerId;
+    if (known) this.releasePointer(e.pointerId);
+  }
+
+  // ウィンドウから離れた。押していた指・キーは離したことにする（離した通知が届かないため）
+  handleBlur() {
+    const had = this.pointers.size > 0 || this.panning !== null;
+    this.pointers.clear();
+    this.pinch = null;
+    this.gestureCancelled = false;
+    this.panning = null;
+    this.mapDrag = false;
+    if (had) this.current.cancel();
+    this.keys.releaseAll();
+    this.updateCursor();
+  }
+
+  // 1 本の指を中断として片付け、ツールの途中の操作を cancel する
+  private releasePointer(id: number) {
+    if (this.panning && id === this.panning.id) {
       this.panning = null;
       this.updateCursor();
     }
-    this.pointers.delete(e.pointerId);
+    this.pointers.delete(id);
     if (this.pointers.size < 2) this.pinch = null;
+    if (this.pointers.size === 0) this.gestureCancelled = false;
     this.mapDrag = false;
     this.current.cancel();
   }
@@ -190,86 +232,42 @@ export class Input {
   }
 
   // --- キーボード ---
-  // 矢印 / WASD でパン（Shift で速く）、+ / - でズーム、0 で自分の光に戻る、1〜5 でツール、Space+ドラッグでパン。
-  // ブラウザやOSのショートカットを邪魔しないよう、Ctrl / Alt / Meta つきは扱わない（Undo/Redo を除く）
+  // 矢印 / WASD でパン（Shift で速く）、+ / - でズーム、0 で自分の光に戻る、1〜5 でツール、Space+ドラッグでパン
   handleKeyDown(e: KeyboardEvent) {
-    this.shiftHeld = e.shiftKey;
-    if (e.ctrlKey || e.metaKey) {
-      const k = e.key.toLowerCase();
-      if (k === "z") {
-        e.preventDefault();
-        if (e.shiftKey) this.app.history.redo();
-        else this.app.history.undo();
-      } else if (k === "y") {
-        e.preventDefault();
-        this.app.history.redo();
-      }
-      return;
-    }
-    if (e.altKey) return;
-
-    const key = e.key.toLowerCase();
-    if (key === " ") {
-      e.preventDefault();
-      this.spaceDown = true;
-      this.updateCursor();
-    } else if (PAN_KEYS.has(key) || ZOOM_KEYS.has(key)) {
-      e.preventDefault();
-      this.keys.add(key);
-    } else if (key === "0" || key === "home") {
-      e.preventDefault();
-      this.app.focusLight();
-    } else if (/^[1-5]$/.test(key)) {
-      this.app.ui.selectTool(TOOL_ORDER[Number(key) - 1]);
-    }
+    const wasSpace = this.keys.spaceDown;
+    const { action, preventDefault } = this.keys.down(e);
+    if (preventDefault) e.preventDefault();
+    if (wasSpace !== this.keys.spaceDown) this.updateCursor();
+    if (!action) return;
+    if (action.kind === "undo") this.app.undo();
+    else if (action.kind === "redo") this.app.redo();
+    else if (action.kind === "focus") this.app.focusLight();
+    else this.app.ui.selectTool(action.name);
   }
 
   handleKeyUp(e: KeyboardEvent) {
-    this.shiftHeld = e.shiftKey;
-    const key = e.key.toLowerCase();
-    if (key === " ") {
-      this.spaceDown = false;
-      this.updateCursor();
-    }
-    this.keys.delete(key);
-  }
-
-  private releaseKeys() {
-    this.keys.clear();
-    this.spaceDown = false;
-    this.updateCursor();
+    const wasSpace = this.keys.spaceDown;
+    this.keys.up(e);
+    if (wasSpace !== this.keys.spaceDown) this.updateCursor();
   }
 
   // 押されているキーに応じて、毎フレーム視点を動かす
   update(dt: number) {
-    if (!this.keys.size) return;
+    if (!this.keys.active) return;
     const { camera } = this.app;
     const seconds = dt * (1 / 60);
-    const fast = this.shiftHeld ? 2.5 : 1;
+    const fast = this.keys.shift ? 2.5 : 1;
     const step = KEY_PAN_PX_PER_SEC * fast * seconds;
-    let dx = 0,
-      dy = 0,
-      zoom = 0;
-    for (const k of this.keys) {
-      if (k === "arrowleft" || k === "a") dx += step;
-      else if (k === "arrowright" || k === "d") dx -= step;
-      else if (k === "arrowup" || k === "w") dy += step;
-      else if (k === "arrowdown" || k === "s") dy -= step;
-      else if (k === "+" || k === "=" || k === "add") zoom += 1;
-      else if (k === "-" || k === "_" || k === "subtract") zoom -= 1;
-    }
-    if (dx || dy) camera.pan(dx, dy);
+    const { dx, dy, zoom } = this.keys.motion();
+    if (dx || dy) camera.pan(dx * step, dy * step);
     if (zoom) camera.zoomBy(Math.exp(zoom * KEY_ZOOM_PER_SEC * seconds));
   }
 
   // Space を押している間・ドラッグ中は手のカーソルにする（普通は光が主役なのでカーソルは隠す）
   private updateCursor() {
-    this.app.canvas.style.cursor = this.panning ? "grabbing" : this.spaceDown ? "grab" : "";
+    this.app.canvas.style.cursor = this.panning ? "grabbing" : this.keys.spaceDown ? "grab" : "";
   }
 }
 
-const PAN_KEYS = new Set(["arrowleft", "arrowright", "arrowup", "arrowdown", "w", "a", "s", "d"]);
-const ZOOM_KEYS = new Set(["+", "=", "-", "_", "add", "subtract"]); // 数字キーパッドも含む
-const TOOL_ORDER: ToolName[] = ["move", "star", "line", "erase", "ghost"];
 const KEY_PAN_PX_PER_SEC = 480; // Leaflet の矢印 1 回 80px を、押している間の連続移動にした値
 const KEY_ZOOM_PER_SEC = 1.4;

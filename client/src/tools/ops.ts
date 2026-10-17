@@ -7,9 +7,9 @@ import type { ToolContext } from "./tool";
 // ---------------------------------------------------------------------------
 export type StarSnap = ReturnType<typeof snap>;
 
-// 同じ id・位置・色で星を置き直す
+// 同じ id・位置・色で星を置き直す（色は消したときのもの）
 export function placeAgain(ctx: ToolContext, st: StarSnap) {
-  ctx.universe.placeStar(st.x, st.y, ctx.player.colorIndex, st);
+  ctx.universe.placeStar(st.x, st.y, st.c, st);
 }
 
 // id の星がまだあれば消す

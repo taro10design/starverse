@@ -78,7 +78,7 @@ export class UI {
   }
 
   createTools() {
-    const { input, history } = this.app;
+    const { input } = this.app;
     const el = document.createElement("div");
     el.id = "tools";
     TOOL_ORDER.forEach((name, i) => {
@@ -101,14 +101,14 @@ export class UI {
     undoB.style.marginLeft = "10px";
     undoB.innerHTML = ICON_UNDO;
     undoB.title = "もどす (Ctrl+Z)";
-    UI.onPress(undoB, () => history.undo());
+    UI.onPress(undoB, () => this.app.undo());
     el.appendChild(undoB);
 
     const redoB = (this.redoBtn = document.createElement("button"));
     redoB.className = "tool hist dim";
     redoB.innerHTML = ICON_REDO;
     redoB.title = "やりなおす (Ctrl+Y)";
-    UI.onPress(redoB, () => history.redo());
+    UI.onPress(redoB, () => this.app.redo());
     el.appendChild(redoB);
 
     document.body.appendChild(el);

@@ -19,11 +19,12 @@ function set(key: string, value: string): void {
   }
 }
 
-function getJSON<T>(key: string): T | null {
+// 形は保証しない（unknown を返す）。使う側で validate.ts の関数を使って確かめる
+function getJSON(key: string): unknown {
   const raw = get(key);
   if (raw === null) return null;
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch {
     return null; // 壊れたデータは無かったものとして扱う
   }

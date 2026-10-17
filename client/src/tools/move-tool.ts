@@ -14,7 +14,7 @@ export class MoveTool implements Tool {
     return false; // 光の追従は Input の既定動作に任せる
   }
   up(p: PointerInfo, tap: boolean) {
-    if (!tap) return;
+    if (!tap || !this.ctx.canEdit()) return; // 消す・きらめき・復活はサーバーへ送るので、切れている間はしない
     const { universe, history, hit, feedback } = this.ctx;
     const s = hit.star(p.sx, p.sy, 20);
     if (s) {
@@ -29,7 +29,7 @@ export class MoveTool implements Tool {
     const g = hit.ghost(p.sx, p.sy);
     if (g) {
       const gg = { ...g };
-      universe.reviveGhost(g); // 消えた自分の星はタップで復活
+      if (!universe.reviveGhost(g)) return; // 消えた自分の星はタップで復活（上限なら幽霊のまま）
       feedback.ping();
       feedback.haptic();
       history.pushOp({
