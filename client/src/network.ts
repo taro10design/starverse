@@ -1,3 +1,4 @@
+import ReconnectingWebSocket from "partysocket/ws";
 import { WS_HOST } from "./constants";
 import { SOLO } from "./env";
 import type { ClientMessage, View } from "../../shared/protocol";
@@ -10,48 +11,104 @@ import type { App } from "./app";
 // 位置を送る間隔はサーバーが指示する（welcome / rate）。人が増えるほど間隔が広がり、
 // 1 つの空が受け取るメッセージ量を一定の予算に収める。受信側は補間して滑らかに見せる。
 //
-// 接続の状態: 接続はいつも高々 1 本（this.ws）。新しく開く前に、古い接続のハンドラを外して閉じ、
-// 予約済みの再接続も取り消す。古い接続から遅れて届いた通知は ws !== this.ws で無視する。
-// 「隠れて切った」（paused）間は、再接続を予約しない。表示に戻ったら 1 本だけ開く。
-// 再接続の待ち時間は、welcome まで受け取れたときだけ初期値に戻す（開くだけで切られる状態で詰め寄らない）。
+// 接続は PartySocket（partysocket/ws の ReconnectingWebSocket）に任せる。再接続の待ち・バックオフ・
+// CONNECTING のタイムアウト・古い接続のイベントの切り離し・二重接続の防止は部品の仕事。
+// ここに残すのはアプリ固有のこと: hello の送信、welcome の待ち、死活監視の ping、隠れたタブの切断、
+// 1008（乱用対策）で切られたときの長い待ち、サーバーが指示した送信間隔。
 // ---------------------------------------------------------------------------
 const DEFAULT_SEND_MS = 100; // 位置を送る間隔の下限（サーバーの指示がこれより短くても守る）
 const PING_MS = 10_000; // 死活監視の ping（サーバーが Durable Object を起こさずに pong を返す）
 const DEAD_AFTER_MS = 25_000; // 何も受け取れない状態がこれだけ続いたら（ping 2 回に答えが無い）、つなぎ直す
 const WATCHDOG_MS = 5000; // 死活監視の確認間隔
-const CONNECT_TIMEOUT_MS = 10_000; // 開いてから welcome までの上限（CONNECTING のまま固まるのを防ぐ）
+const WELCOME_TIMEOUT_MS = 10_000; // 開いてから welcome までの上限
 const HIDDEN_CLOSE_MS = 30_000; // タブが隠れて、これだけ経ったら切断して空きを返す
-const RETRY_MIN_MS = 1500;
-const RETRY_MAX_MS = 15_000;
 const POLICY_RETRY_MS = 30_000; // サーバーが 1008（ポリシー違反・乱用対策）で切ったときの待ち時間
 const CLOSE_POLICY = 1008;
 const OPEN = 1; // WebSocket.OPEN
+
+// PartySocket の設定。待ち時間は 1.5 秒 × 1.6^n（15 秒で頭打ち）。一斉に再接続して集中しないよう、
+// 最小の待ちを端末ごとに 1〜1.5 倍ずらす（PartySocket 自体の待ちにはばらつきが無い）。
+// 待ちが初期値に戻るのは、接続が minUptime（5 秒）続いたとき（開くだけで切られる状態で詰め寄らない）。
+// 送信バッファは使わない（maxEnqueuedMessages: 0）。切断中の star などを再接続後に送ると、
+// welcome で状態を置き換えたあとに古い操作が届き、持ち主の整合が崩れるため
+export function socketOptions() {
+  return {
+    minReconnectionDelay: 1500 * (1 + Math.random() * 0.5),
+    maxReconnectionDelay: 15_000,
+    reconnectionDelayGrowFactor: 1.6,
+    minUptime: 5000,
+    connectionTimeout: 10_000, // CONNECTING のまま固まるのを防ぐ
+    maxRetries: Infinity,
+    maxEnqueuedMessages: 0,
+    // 1008 では PartySocket の再接続を止め、こちらで長く待ってから reconnect() する
+    shouldReconnectOnClose: (e: { code: number }) => e.code !== CLOSE_POLICY,
+  };
+}
 
 // Network が使う App の部分（テストでは最小の偽物を渡す）
 export type NetworkHost = Pick<App, "universe" | "player" | "camera">;
 
 export class Network {
-  private ws: WebSocket | null = null;
+  private ws: ReconnectingWebSocket | null = null;
   private welcomed = false; // いまの接続で welcome を受け取ったか
-  private retry = RETRY_MIN_MS;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private welcomeTimer: ReturnType<typeof setTimeout> | null = null;
+  private policyTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   private paused = false; // 隠れていたために切った（表示に戻ったらつなぐ）
-  private started = false;
   private sendMs = DEFAULT_SEND_MS;
   private lastSend = 0;
   private lastSent: { x: number; y: number; v: View } | null = null;
   private lastRx = 0;
 
-  constructor(private app: NetworkHost) {}
+  // socketImpl: WebSocket の実装（テストで偽物を差し込む。省略時はブラウザの WebSocket）
+  constructor(
+    private app: NetworkHost,
+    private socketImpl?: typeof WebSocket,
+  ) {}
 
   connect() {
-    if (SOLO || location.protocol === "file:" || this.started) return;
-    this.started = true;
+    if (SOLO || location.protocol === "file:" || this.ws) return;
     document.addEventListener("visibilitychange", () => this.onVisibility());
-    this.open();
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new ReconnectingWebSocket(`${scheme}://${WS_HOST}/ws`, undefined, {
+      ...socketOptions(),
+      WebSocket: this.socketImpl,
+    });
+    this.ws = ws;
+    // addEventListener ではなく onX に付ける。ブラウザでは PartySocket が自分で作る close（reconnect() や
+    // タイムアウト）を addEventListener 向けに複製するとき code が壊れるため（onX には元のイベントが届く）
+    ws.onopen = () => {
+      this.lastRx = Date.now();
+      this.send({ t: "hello", uid: this.app.universe.uid }); // 最初に 1 回だけ、持ち主の鍵を名乗る
+      this.sendPosition(); // 接続直後は、操作していなくても 1 回送る
+      this.startWatchdog();
+      // つながっても welcome が来ないまま固まったら、つなぎ直す
+      this.clearWelcomeTimer();
+      this.welcomeTimer = setTimeout(() => {
+        this.welcomeTimer = null;
+        if (!this.welcomed) ws.reconnect();
+      }, WELCOME_TIMEOUT_MS);
+    };
+    ws.onmessage = (e) => {
+      this.lastRx = Date.now();
+      if (e.data === "pong") return;
+      const m = parseServerMessage(e.data);
+      if (m) handleServerMessage(m, this.app.universe, this);
+    };
+    ws.onclose = (e) => {
+      this.onDisconnected();
+      // 乱用対策で切られたなら、しばらく（ばらつきつきで）待つ。PartySocket の再接続は止まっている
+      if (e.code !== CLOSE_POLICY) return;
+      this.clearPolicyTimer();
+      this.policyTimer = setTimeout(
+        () => {
+          this.policyTimer = null;
+          ws.reconnect();
+        },
+        POLICY_RETRY_MS * (1 + Math.random() * 0.5),
+      );
+    };
   }
 
   // サーバーへ送る操作ができる状態か（つながっていて、welcome で持ち主 ID が分かっている）
@@ -59,95 +116,33 @@ export class Network {
     return this.welcomed && this.ws !== null && this.ws.readyState === OPEN;
   }
 
-  private open() {
-    this.cancelReconnect();
-    this.discard();
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${scheme}://${WS_HOST}/ws`);
-    this.ws = ws;
-    this.welcomed = false;
-    this.clearConnectTimer();
-    // onopen も welcome も来ないまま固まったら、閉じて（待ち時間を伸ばしながら）つなぎ直す
-    this.connectTimer = setTimeout(() => {
-      this.connectTimer = null;
-      if (ws !== this.ws || this.welcomed) return;
-      this.discard();
-      this.scheduleReconnect();
-    }, CONNECT_TIMEOUT_MS);
-    ws.onopen = () => {
-      if (ws !== this.ws) return;
-      this.lastRx = Date.now();
-      this.send({ t: "hello", uid: this.app.universe.uid }); // 最初に 1 回だけ、持ち主の鍵を名乗る
-      this.sendPosition(); // 接続直後は、操作していなくても 1 回送る
-      this.startWatchdog(ws);
-    };
-    ws.onmessage = (e) => {
-      if (ws !== this.ws) return;
-      this.lastRx = Date.now();
-      if (e.data === "pong") return;
-      const m = parseServerMessage(e.data);
-      if (m) handleServerMessage(m, this.app.universe, this);
-    };
-    ws.onclose = (e) => {
-      if (ws !== this.ws) return; // 置き換えた古い接続の通知
-      this.ws = null;
-      this.onDisconnected();
-      if (this.paused) return;
-      // 乱用対策で切られたなら、しばらく（ばらつきつきで）待つ
-      if (e.code === CLOSE_POLICY) this.scheduleReconnect(POLICY_RETRY_MS * (1 + Math.random() * 0.5));
-      else this.scheduleReconnect();
-    };
-    ws.onerror = () => {
-      if (ws === this.ws) ws.close();
-    };
-  }
-
-  // いまの接続のハンドラを外して閉じる（閉じる通知を待たない）
-  private discard() {
-    const ws = this.ws;
-    if (!ws) return;
-    this.ws = null;
-    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-    ws.close();
-    this.onDisconnected();
-  }
-
   private onDisconnected() {
     this.welcomed = false;
     this.stopWatchdog();
-    this.clearConnectTimer();
+    this.clearWelcomeTimer();
     this.app.universe.peers.clear();
   }
 
-  private clearConnectTimer() {
-    if (this.connectTimer) clearTimeout(this.connectTimer);
-    this.connectTimer = null;
+  private clearWelcomeTimer() {
+    if (this.welcomeTimer) clearTimeout(this.welcomeTimer);
+    this.welcomeTimer = null;
   }
 
-  // 一斉に再接続して集中しないよう、待ち時間にばらつきを持たせる。delay を渡すとその時間だけ待つ
-  private scheduleReconnect(delay = this.retry * (0.5 + Math.random())) {
-    this.cancelReconnect();
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.open();
-    }, delay);
-    this.retry = Math.min(this.retry * 1.6, RETRY_MAX_MS);
+  private clearPolicyTimer() {
+    if (this.policyTimer) clearTimeout(this.policyTimer);
+    this.policyTimer = null;
   }
 
-  private cancelReconnect() {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
-  }
-
+  // 開いているときだけ送る。切断中の操作は捨てる（PartySocket のバッファも 0 にしてある）
   send(obj: ClientMessage) {
-    if (this.ws && this.ws.readyState === OPEN) this.ws.send(JSON.stringify(obj));
+    if (this.ws?.readyState === OPEN) this.ws.send(JSON.stringify(obj));
   }
 
   // welcome を受け取った（message-handlers から呼ばれる）。ここで初めて「つながった」とみなす
+  // （再接続の待ちを初期値に戻すのは PartySocket の minUptime。部品に、外から戻す API が無いため）
   markWelcomed() {
     this.welcomed = true;
-    this.retry = RETRY_MIN_MS;
-    this.clearConnectTimer();
+    this.clearWelcomeTimer();
   }
 
   // サーバーからの指示で、位置を送る間隔を変える（1 人のときの 1000ms などもそのまま使う。下限だけ守る）
@@ -190,14 +185,15 @@ export class Network {
   // --- 死活監視 ---
 
   // 定期的に ping を送り、長く何も届かなければ切れているとみなす。
-  // half-open（閉じる通知が来ない）こともあるので、閉じるのを待たずに新しく開く
-  private startWatchdog(ws: WebSocket) {
+  // half-open（閉じる通知が来ない）こともあるので、reconnect() で古い接続を捨てて、待たずに新しく開く
+  private startWatchdog() {
     this.stopWatchdog();
     let sinceLastPing = 0;
     this.watchdog = setInterval(() => {
-      if (ws !== this.ws) return;
+      const ws = this.ws;
+      if (!ws) return;
       if (Date.now() - this.lastRx >= DEAD_AFTER_MS) {
-        this.open();
+        ws.reconnect();
         return;
       }
       sinceLastPing += WATCHDOG_MS;
@@ -214,15 +210,16 @@ export class Network {
   }
 
   // --- 隠れたタブ ---
-  // 隠れている間は描画ループが止まり位置も送られない。長く隠れたら切断して空きを返し、戻ったらつなぎ直す
+  // 隠れている間は描画ループが止まり位置も送られない。長く隠れたら切断して空きを返し、戻ったらつなぎ直す。
+  // close() は PartySocket の再接続（待ちの途中のものも）を止める。reconnect() は接続を 1 本にそろえて開き直す
   private onVisibility() {
     if (document.hidden) {
       if (this.hiddenTimer || this.paused) return;
       this.hiddenTimer = setTimeout(() => {
         this.hiddenTimer = null;
         this.paused = true;
-        this.cancelReconnect();
-        this.discard();
+        this.clearPolicyTimer();
+        this.ws?.close();
       }, HIDDEN_CLOSE_MS);
       return;
     }
@@ -230,8 +227,7 @@ export class Network {
     this.hiddenTimer = null;
     if (this.paused) {
       this.paused = false;
-      this.retry = RETRY_MIN_MS;
-      this.open();
+      this.ws?.reconnect();
     }
   }
 }
