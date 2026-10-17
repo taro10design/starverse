@@ -35,7 +35,7 @@ scripts/   e2e.mjs（動作確認）/ loadtest.mjs（負荷テスト）/ latency
 docs/      adr（設計判断）/ specs（仕様）/ qa（実機確認）/ TODO.md / この文書 / extending.md
 ```
 
-ルートには `package.json`・`tsconfig.json`・`wrangler.jsonc`・`vitest.config.ts`・`eslint.config.mjs` など設定と、`THIRD_PARTY_NOTICES.md`（使っている部品のライセンス表記。`npm run notices` で生成）を置きます。
+ルートには、ツールがルートで探す設定だけを置きます（`package.json`・`tsconfig.json`・`wrangler.jsonc`・`vitest.config.ts`・`eslint.config.mjs`・`.gitignore`・`.gitattributes`）。Prettier の設定は `package.json` の `prettier` に置きます。使っている部品のライセンス表記は `client/public/THIRD_PARTY_NOTICES.txt`（`npm run notices` で生成し、サイトでも配信）です。
 
 依存の向きは `client → shared ← server`。クライアントとサーバーは互いを直接 import しません。
 
@@ -49,7 +49,7 @@ docs/      adr（設計判断）/ specs（仕様）/ qa（実機確認）/ TODO.
 | 星の保存のたびに全件をシリアライズ | **1 件 1 キー（`s:<id>` / `l:<id>`）で、変わった分だけ保存** | [ADR 0005](adr/0005-world-as-pure-class.md) |
 | 密集度の計算が O(n²) | **空間ハッシュ**で近傍だけを数える。実行は 1 秒以上あけ、30 秒ごとのアラームでも実行 | [spatial.ts](../server/src/spatial.ts) |
 | 不正な値・連打・他人の星の上書き・なりすまし | **Valibot のスキーマで入力検証**、**接続ごとのトークンバケット**、他人の星は上書き不可、**持ち主の鍵は秘密にして SHA-256 の ID だけを配信** | [protocol.ts](../shared/protocol.ts) / [validate.ts](../server/src/validate.ts) / [rate-limit.ts](../server/src/rate-limit.ts) |
-| 同じ接続元（IP）からの大量の接続・連打 | Worker では IP を見ない。**Cloudflare のエッジのレート制限ルール**に任せる（設定は [TODO](TODO.md)） | [ADR 0009](adr/0009-prefer-proven-components.md) |
+| 同じ接続元（IP）からの大量の接続・連打 | Worker の入口で **Rate Limiting バインディング**（60 秒に 60 回）、空の中で同時接続数（32 本、メモリ上だけで数える）。IPv6 は /64 ごと。根本の対策は **Cloudflare のエッジのレート制限ルール**（設定は [TODO](TODO.md)） | [ADR 0009](adr/0009-prefer-proven-components.md) |
 | 自作の部品が増えて保守できなくなる | 実績のある部品に置き換える: サーバーの接続管理は **PartyServer**、クライアントの再接続は **PartySocket**、入力検証は **Valibot** | [ADR 0009](adr/0009-prefer-proven-components.md) |
 | 誰も動かないのにタイマーが回り続ける | 動きが無い間は配信タイマーを止め、Durable Object がハイバネートできるようにする | [presence.ts](../server/src/presence.ts) / [room.ts](../server/src/room.ts) |
 | クライアントとサーバーでルールがずれる | メッセージ型と星の寿命ルールを `shared/` の 1 か所に置く。ハンドラ表で処理の書き忘れを型エラーにする | [ADR 0004](adr/0004-shared-protocol-and-handler-tables.md) |
@@ -97,7 +97,7 @@ JSON を WebSocket で送受信します。`t` が種別で、通信量を抑え
 - **Hibernation**: 接続の受け付けとハイバネートからの復帰は PartyServer（`Server`、`static options = { hibernate: true }`）が担う。接続ごとに残す最小の情報（id・持ち主 ID・位置・色）は `connection.setState` に書き、起きたらそこからメモリ上の状態（トークンバケットなど）を作り直す
 - **永続化**: `onStart`（PartyServer が `blockConcurrencyWhile` の中で呼ぶ）で保存済みの星・線を復元してから最初のリクエストを処理する。保存は変わった分だけ。旧形式のレコードはこのときに捨てる
 - **受信の関門**: 1 通ごとに、JSON を読む前に 1 トークン取る（[inbound.ts](../server/src/inbound.ts)）。hello の前後で振り分け、処理の前に `COST` との差を追加で取る。直近 10 秒の窓で、あふれた割合が 0.5 以上かつあふれが 100 通以上なら 1008 で切断。hello 前の hello 以外・2 回目以降の hello は通算 20 回目で 1008 で切断
-- **接続元（IP）**: サーバーは IP を見ない（保存も計算もしない）。同じ接続元ごとの接続数・頻度の制限は、Cloudflare のエッジのレート制限ルールで行う
+- **接続元（IP）**: IP は保存しない。Worker の入口で接続頻度（Rate Limiting バインディング、60 秒に 60 回）を、空の中で同時接続数（32 本、メモリ上だけ）を数える。IPv6 は /64 ごと。多数の IP を使う相手への根本の対策は、Cloudflare のエッジのレート制限ルールで行う
 - **再接続（クライアント）**: PartySocket（`partysocket/ws`）に任せる。待ちは最小 1.5 秒（端末ごとに 1.0〜1.5 倍ずらす）、×1.6 ずつ、最大 15 秒。接続が 5 秒続くと待ちが戻る。送信バッファは使わない（`maxEnqueuedMessages: 0`）。1008 で切られたら 30〜45 秒待つ。開いて 10 秒 welcome が来なければつなぎ直す
 - **死活監視**: クライアントが 10 秒ごとに `"ping"` を送り、25 秒何も届かなければ（ping 2 回に答えが無い）切れているとみなしてつなぎ直す。タブが 30 秒隠れたら切断して空きを返し、戻ったらつなぎ直す
 - **切断中**: 切断中・welcome 前は編集操作（星・線・消去・アンドゥ）をしない（`App.canEdit`）。切断中の操作は後から送らず捨てる

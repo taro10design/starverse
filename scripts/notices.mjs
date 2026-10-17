@@ -1,6 +1,6 @@
 // サードパーティのライセンス表記（THIRD_PARTY_NOTICES）を生成する。
 //
-//   node scripts/notices.mjs          # THIRD_PARTY_NOTICES.md と client/public/THIRD_PARTY_NOTICES.txt を書き出す
+//   node scripts/notices.mjs          # client/public/THIRD_PARTY_NOTICES.txt を書き出す（サイトの /THIRD_PARTY_NOTICES.txt）
 //   node scripts/notices.mjs --check  # 最新か確認する（古ければ終了コード 1。CI で使う）
 //
 // 配布物に入る部品（package.json の `dependencies` と、その `dependencies` を辿った先）だけを対象にする。
@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const outputs = [path.join(root, "THIRD_PARTY_NOTICES.md"), path.join(root, "client/public/THIRD_PARTY_NOTICES.txt")];
+const outputs = [path.join(root, "client/public/THIRD_PARTY_NOTICES.txt")];
 
 // npm パッケージに LICENSE ファイルが入っていない部品の、公式リポジトリのライセンス文
 const FALLBACK = {

@@ -1,6 +1,0 @@
-node_modules
-client/dist
-.wrangler
-package-lock.json
-# ドキュメントは本文の折り返しを自分で管理する
-*.md
