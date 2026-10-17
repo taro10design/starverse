@@ -43,6 +43,24 @@ export class Camera {
     this.cy = wy - (sy - this.H / 2) / s;
     this.free = true;
   }
+  // 画面上で (dxPx, dyPx) ぶん動かす（ドラッグした分だけ世界が動く向き）
+  pan(dxPx: number, dyPx: number) {
+    const s = this.scalePx();
+    this.cx -= dxPx / s;
+    this.cy -= dyPx / s;
+    this.free = true;
+  }
+  // 画面の中心を基準にズーム（ボタン・キー用）
+  zoomBy(factor: number) {
+    this.zoomAt(factor, this.W / 2, this.H / 2);
+  }
+  // 自分の光を中心に戻し、倍率も初期値へ
+  focusOn(x: number, y: number) {
+    this.setZoom(1);
+    this.cx = x;
+    this.cy = y;
+    this.free = false;
+  }
   zoomAt(factor: number, sx: number, sy: number) {
     const [wx, wy] = this.screenToWorld(sx, sy);
     this.setZoom(this.z * factor);

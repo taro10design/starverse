@@ -1,4 +1,4 @@
-import { SOLO } from "./env";
+import { DEBUG, SOLO } from "./env";
 import { snap } from "./util";
 import { Camera } from "./camera";
 import { Player } from "./player";
@@ -25,6 +25,7 @@ export class App {
   private t0 = 0;
 
   init() {
+    if (DEBUG) Object.defineProperty(window, "__app", { value: this }); // `?debug` のときだけ、動作確認用に公開
     this.input.bind();
     this.network.connect();
     setInterval(() => this.universe.cleanupExpired(), 15000);
@@ -41,6 +42,7 @@ export class App {
 
   update(dt: number, t: number) {
     const { player, camera, universe, renderer, network } = this;
+    this.input.update(dt);
     player.update(dt, t);
     camera.follow(player);
     network.tick(t);
@@ -49,7 +51,13 @@ export class App {
     universe.updatePeers(dt);
   }
 
-  // --- UI から呼ばれる、複数クラスにまたがる操作 ---
+  // --- UI / 入力から呼ばれる、複数クラスにまたがる操作 ---
+  // 自分の光を中心に、倍率も初期値へ戻す
+  focusLight() {
+    this.camera.focusOn(this.player.x, this.player.y);
+  }
+
+
   // 消モードでもう一度押す＝自分の星を全部消す
   clearMine() {
     const { universe, history, player, ui } = this;

@@ -6,6 +6,8 @@ import type { App } from "./app";
 // ---------------------------------------------------------------------------
 // UI — DOM の生成とイベント、触覚・音のフィードバック
 // ---------------------------------------------------------------------------
+const ICON_FOCUS = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const TOOL_ORDER: ToolName[] = ["move", "star", "line", "erase", "ghost"];
 const ICON_UNDO = '<svg viewBox="0 0 24 24"><path d="M8 5 L3 9.5 L8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 9.5 L14 9.5 A6 6 0 0 1 14 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_REDO = '<svg viewBox="0 0 24 24"><path d="M16 5 L21 9.5 L16 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9.5 L10 9.5 A6 6 0 0 0 10 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
@@ -15,11 +17,13 @@ export class UI {
   private undoBtn!: HTMLButtonElement;
   private redoBtn!: HTMLButtonElement;
   mapEl!: HTMLCanvasElement;
+  private toolButtons = new Map<ToolName, HTMLButtonElement>();
 
   constructor(private app: App) {
     this.createPalette();
     this.createModeToggle();
     this.createTools();
+    this.createZoomControls();
     this.createHelpPanel();
     this.createMinimap();
     this.updateHistoryButtons();
@@ -72,20 +76,20 @@ export class UI {
     const { input, history } = this.app;
     const el = document.createElement("div");
     el.id = "tools";
-    for (const name of ["move", "star", "line", "erase", "ghost"] as ToolName[]) {
+    TOOL_ORDER.forEach((name, i) => {
       const b = document.createElement("button");
       b.className = "tool" + (name === input.tool ? " on" : "");
       b.innerHTML = TOOL_SVG[name];
-      b.title = TOOL_TIPS[name];
+      b.title = `${TOOL_TIPS[name]} (${i + 1})`;
       b.setAttribute("aria-label", TOOL_TIPS[name]);
       UI.onPress(b, () => {
         if (name === "erase" && input.tool === "erase") return this.app.clearMine(); // もう一度押す＝自分の星を全部消す
         if (name === "ghost" && input.tool === "ghost") return this.app.forgetAllGhosts(); // もう一度押す＝幽霊を全部忘れる
-        input.setTool(name);
-        el.querySelectorAll(".tool").forEach((t) => t.classList.toggle("on", t === b));
+        this.selectTool(name);
       });
+      this.toolButtons.set(name, b);
       el.appendChild(b);
-    }
+    });
 
     const undoB = (this.undoBtn = document.createElement("button"));
     undoB.className = "tool hist dim";
@@ -102,6 +106,33 @@ export class UI {
     UI.onPress(redoB, () => history.redo());
     el.appendChild(redoB);
 
+    document.body.appendChild(el);
+  }
+
+  // ツールを切り替える（ボタンでもキーボードでも）
+  selectTool(name: ToolName) {
+    this.app.input.setTool(name);
+    for (const [n, b] of this.toolButtons) b.classList.toggle("on", n === name);
+  }
+
+  // 画面上の拡大・縮小・戻るボタン。ドラッグやキーが使えなくても、ポインタ1つで同じことができるようにする
+  createZoomControls() {
+    const { camera } = this.app;
+    const el = document.createElement("div");
+    el.id = "zoomctl";
+    const add = (label: string, title: string, fn: () => void, svg?: string) => {
+      const b = document.createElement("button");
+      b.className = "tool";
+      if (svg) b.innerHTML = svg;
+      else b.textContent = label;
+      b.title = title;
+      b.setAttribute("aria-label", title);
+      UI.onPress(b, fn);
+      el.appendChild(b);
+    };
+    add("+", "ズームイン (+)", () => camera.zoomBy(1.4));
+    add("−", "ズームアウト (-)", () => camera.zoomBy(1 / 1.4));
+    add("", "自分の光に戻る (0)", () => this.app.focusLight(), ICON_FOCUS);
     document.body.appendChild(el);
   }
 
@@ -130,6 +161,9 @@ export class UI {
   <p>近くの星どうし — 線がつながって星座に</p>
   <p>すごく近い2つ — 連星になって回る</p>
   <p>ピンチ / ホイール — ズーム</p>
+  <p class="dim">PC：Space+ドラッグ / 中・右ボタンのドラッグ / 矢印・WASD — 動かす（Shift で速く）</p>
+  <p class="dim">PC：+ − — ズーム、0 — 自分の光に戻る、1〜5 — ツール切替</p>
+  <p class="dim">右下の ＋ − ◎ でも操作できる</p>
   <p>下の点 — 自分の色</p>
   <p>右上の地図 — 触れた場所へ光を送る</p>
   <p>右下 — ひとりの宇宙と切り替え</p>

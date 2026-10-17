@@ -35,6 +35,11 @@ export class Input {
   private placeBatch: StarSnap[] | null = null;
   private eraseBatch: StarSnap[] | null = null;
   private forgetBatch: Ghost[] | null = null;
+  // PC 向けのカメラ操作
+  private panning: { id: number; sx: number; sy: number; cx: number; cy: number } | null = null;
+  private spaceDown = false;
+  private shiftHeld = false; // 押している間はパンが速くなる
+  private keys = new Set<string>(); // 押されている間パンやズームを続けるキー
 
   constructor(private app: App) {}
 
@@ -45,6 +50,12 @@ export class Input {
     addEventListener("pointercancel", (e) => this.handlePointerCancel(e));
     addEventListener("wheel", (e) => this.handleWheel(e), { passive: false });
     addEventListener("keydown", (e) => this.handleKeyDown(e));
+    addEventListener("keyup", (e) => this.handleKeyUp(e));
+    addEventListener("blur", () => this.releaseKeys()); // ウィンドウから離れたら押しっぱなしを解除
+    // 中ボタンの自動スクロールを止める
+    this.app.canvas.addEventListener("mousedown", (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
     addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
@@ -142,6 +153,13 @@ export class Input {
     const { camera, universe, player, network, ui, history } = this.app;
     this.downTarget = e.target;
     if (e.target !== this.app.canvas) return;
+    // Space+ドラッグ / 中ボタン / 右ボタンのドラッグで視点を動かす
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && this.spaceDown)) {
+      this.panning = { id: e.pointerId, sx: e.clientX, sy: e.clientY, cx: camera.cx, cy: camera.cy };
+      this.app.canvas.setPointerCapture?.(e.pointerId);
+      this.updateCursor();
+      return;
+    }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (this.pointers.size === 2) {
       const [a, b] = [...this.pointers.values()];
@@ -207,6 +225,13 @@ export class Input {
       this.moveToMap(e.clientX - r.left, e.clientY - r.top);
       return;
     }
+    if (this.panning) {
+      const s = camera.scalePx();
+      camera.cx = this.panning.cx - (e.clientX - this.panning.sx) / s;
+      camera.cy = this.panning.cy - (e.clientY - this.panning.sy) / s;
+      camera.free = true;
+      return;
+    }
     if (this.linking) {
       this.linkTip = camera.screenToWorld(e.clientX, e.clientY);
       return;
@@ -252,6 +277,11 @@ export class Input {
 
   handlePointerUp(e: PointerEvent) {
     const { universe, history, player, ui } = this.app;
+    if (this.panning && e.pointerId === this.panning.id) {
+      this.panning = null;
+      this.updateCursor();
+      return;
+    }
     const wasPinch = this.pinch !== null;
     this.pointers.delete(e.pointerId);
     if (this.pointers.size < 2) this.pinch = null;
@@ -312,6 +342,10 @@ export class Input {
   }
 
   handlePointerCancel(e: PointerEvent) {
+    if (this.panning && e.pointerId === this.panning.id) {
+      this.panning = null;
+      this.updateCursor();
+    }
     this.pointers.delete(e.pointerId);
     if (this.pointers.size < 2) this.pinch = null;
     this.mapDrag = false;
@@ -326,15 +360,84 @@ export class Input {
     this.app.camera.zoomAt(Math.exp(-e.deltaY * 0.0012), e.clientX, e.clientY);
   }
 
+  // --- キーボード ---
+  // 矢印 / WASD でパン（Shift で速く）、+ / - でズーム、0 で自分の光に戻る、1〜5 でツール、Space+ドラッグでパン。
+  // ブラウザやOSのショートカットを邪魔しないよう、Ctrl / Alt / Meta つきは扱わない（Undo/Redo を除く）
   handleKeyDown(e: KeyboardEvent) {
-    if (!(e.ctrlKey || e.metaKey)) return;
-    const k = e.key.toLowerCase();
-    if (k === "z") {
+    this.shiftHeld = e.shiftKey;
+    if (e.ctrlKey || e.metaKey) {
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        e.shiftKey ? this.app.history.redo() : this.app.history.undo();
+      } else if (k === "y") {
+        e.preventDefault();
+        this.app.history.redo();
+      }
+      return;
+    }
+    if (e.altKey) return;
+
+    const key = e.key.toLowerCase();
+    if (key === " ") {
       e.preventDefault();
-      e.shiftKey ? this.app.history.redo() : this.app.history.undo();
-    } else if (k === "y") {
+      this.spaceDown = true;
+      this.updateCursor();
+    } else if (PAN_KEYS.has(key) || ZOOM_KEYS.has(key)) {
       e.preventDefault();
-      this.app.history.redo();
+      this.keys.add(key);
+    } else if (key === "0" || key === "home") {
+      e.preventDefault();
+      this.app.focusLight();
+    } else if (/^[1-5]$/.test(key)) {
+      this.app.ui.selectTool(TOOL_ORDER[Number(key) - 1]);
     }
   }
+
+  handleKeyUp(e: KeyboardEvent) {
+    this.shiftHeld = e.shiftKey;
+    const key = e.key.toLowerCase();
+    if (key === " ") {
+      this.spaceDown = false;
+      this.updateCursor();
+    }
+    this.keys.delete(key);
+  }
+
+  private releaseKeys() {
+    this.keys.clear();
+    this.spaceDown = false;
+    this.updateCursor();
+  }
+
+  // 押されているキーに応じて、毎フレーム視点を動かす
+  update(dt: number) {
+    if (!this.keys.size) return;
+    const { camera } = this.app;
+    const seconds = dt * (1 / 60);
+    const fast = this.shiftHeld ? 2.5 : 1;
+    const step = KEY_PAN_PX_PER_SEC * fast * seconds;
+    let dx = 0, dy = 0, zoom = 0;
+    for (const k of this.keys) {
+      if (k === "arrowleft" || k === "a") dx += step;
+      else if (k === "arrowright" || k === "d") dx -= step;
+      else if (k === "arrowup" || k === "w") dy += step;
+      else if (k === "arrowdown" || k === "s") dy -= step;
+      else if (k === "+" || k === "=" || k === "add") zoom += 1;
+      else if (k === "-" || k === "_" || k === "subtract") zoom -= 1;
+    }
+    if (dx || dy) camera.pan(dx, dy);
+    if (zoom) camera.zoomBy(Math.exp(zoom * KEY_ZOOM_PER_SEC * seconds));
+  }
+
+  // Space を押している間・ドラッグ中は手のカーソルにする（普通は光が主役なのでカーソルは隠す）
+  private updateCursor() {
+    this.app.canvas.style.cursor = this.panning ? "grabbing" : this.spaceDown ? "grab" : "";
+  }
 }
+
+const PAN_KEYS = new Set(["arrowleft", "arrowright", "arrowup", "arrowdown", "w", "a", "s", "d"]);
+const ZOOM_KEYS = new Set(["+", "=", "-", "_", "add", "subtract"]); // 数字キーパッドも含む
+const TOOL_ORDER: ToolName[] = ["move", "star", "line", "erase", "ghost"];
+const KEY_PAN_PX_PER_SEC = 480; // Leaflet の矢印 1 回 80px を、押している間の連続移動にした値
+const KEY_ZOOM_PER_SEC = 1.4;
