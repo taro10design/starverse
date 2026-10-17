@@ -36,6 +36,7 @@ function makeClient(i, { probe = false } = {}) {
   };
   ws.onopen = () => {
     stats.open++;
+    ws.send(JSON.stringify({ t: "hello", uid: crypto.randomUUID() })); // 最初に持ち主の鍵を送る（送らないと切断される）
     me.timer = setTimeout(sendLoop, 0);
   };
   ws.onmessage = (e) => {

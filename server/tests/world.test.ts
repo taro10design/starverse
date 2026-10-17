@@ -83,9 +83,24 @@ describe("World: 線", () => {
     const w = setup();
     w.addLink("alice", "l1", "a", "b", T0);
     expect(w.removeLink("l1", "mallory")).toBe(false);
-    expect(w.removeLink("l1", undefined)).toBe(false);
     expect(w.removeLink("l1", "alice")).toBe(true);
     expect(w.links.size).toBe(0);
+  });
+
+  it("星を消して同じ id で置き直しても、古い線は付いてこない", () => {
+    const w = setup();
+    w.addLink("alice", "l1", "a", "b", T0);
+    w.removeStar("a");
+    w.placeStar("alice", "a", 0, 0, 0, T0);
+    expect(w.removeStar("a")?.links).toEqual([]);
+    expect(w.removeStar("b")?.links).toEqual([]);
+  });
+
+  it("線を消したあとに同じ 2 点を結び直せる", () => {
+    const w = setup();
+    w.addLink("alice", "l1", "a", "b", T0);
+    w.removeLink("l1", "alice");
+    expect(w.addLink("alice", "l2", "b", "a", T0)).not.toBeNull();
   });
 
   it("星を消すとつながっていた線も消え、その id が返る", () => {
@@ -148,12 +163,45 @@ describe("World: 永続化", () => {
     expect(w.drainChanges()).toEqual({ put: {}, del: ["s:a"] });
   });
 
-  it("load は変更扱いにならない。存在しない星への線は捨てる", () => {
+  it("load は変更扱いにならない", () => {
+    const w = new World();
+    w.load(
+      [
+        { id: "a", x: 0, y: 0, c: 0, by: "u", ts: T0 },
+        { id: "b", x: 1, y: 1, c: 0, by: "u", ts: T0 },
+      ],
+      [{ id: "l1", a: "a", b: "b", by: "u", ts: T0 }],
+    );
+    expect(w.stars.size).toBe(2);
+    expect(w.links.size).toBe(1);
+    expect(w.drainChanges()).toEqual({ put: {}, del: [] });
+  });
+
+  it("load で端点の無い線は捨て、保存先からも消す", () => {
     const w = new World();
     w.load([{ id: "a", x: 0, y: 0, c: 0, by: "u", ts: T0 }], [{ id: "l1", a: "a", b: "ghost", by: "u", ts: T0 }]);
     expect(w.stars.size).toBe(1);
     expect(w.links.size).toBe(0);
-    expect(w.drainChanges()).toEqual({ put: {}, del: [] });
+    expect(w.drainChanges()).toEqual({ put: {}, del: ["l:l1"] });
+  });
+
+  it("load で捨てた線は持ち主の枠を使わない", () => {
+    const w = new World();
+    const ghosts = Array.from({ length: LIMITS.maxLinksPerUser }, (_, i) => ({
+      id: `g${i}`,
+      a: "a",
+      b: `ghost${i}`,
+      by: "alice",
+      ts: T0,
+    }));
+    w.load(
+      [
+        { id: "a", x: 0, y: 0, c: 0, by: "alice", ts: T0 },
+        { id: "b", x: 1, y: 1, c: 0, by: "alice", ts: T0 },
+      ],
+      ghosts,
+    );
+    expect(w.addLink("alice", "l1", "a", "b", T0)).not.toBeNull();
   });
 
   it("置いて消した星は put に残らない", () => {

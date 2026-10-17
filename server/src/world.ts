@@ -83,9 +83,9 @@ export class World {
   }
 
   // 線は持ち主だけが消せる
-  removeLink(id: string, owner: string | undefined): boolean {
+  removeLink(id: string, owner: string): boolean {
     const link = this.links.get(id);
-    if (!link || !owner || link.by !== owner) return false;
+    if (!link || link.by !== owner) return false;
     this.deleteLink(link);
     return true;
   }
@@ -117,11 +117,13 @@ export class World {
 
   // --- 永続化 ---
 
-  // 起動時に保存済みの状態を取り込む（変更扱いにはしない）
+  // 起動時に保存済みの状態を取り込む（変更扱いにはしない）。
+  // 端の星が無い線は取り込まず、保存先からも消す（残すと起動のたびに読んで捨てることになる）
   load(stars: Iterable<StarData>, links: Iterable<LinkData>) {
     for (const s of stars) this.putStar(s, false);
     for (const l of links) {
       if (this.stars.has(l.a) && this.stars.has(l.b)) this.putLink(l, false);
+      else this.markDel(linkKey(l.id));
     }
   }
 
@@ -157,6 +159,7 @@ export class World {
         removedLinks.push(lid);
       }
     }
+    this.linksByStar.delete(star.id);
     this.stars.delete(star.id);
     this.bump(this.starsByOwner, star.by, -1);
     this.markDel(starKey(star.id));
@@ -177,7 +180,12 @@ export class World {
   private deleteLink(link: LinkData) {
     this.links.delete(link.id);
     this.bump(this.linksByOwner, link.by, -1);
-    for (const end of [link.a, link.b]) this.linksByStar.get(end)?.delete(link.id);
+    for (const end of [link.a, link.b]) {
+      const set = this.linksByStar.get(end);
+      if (!set) continue;
+      set.delete(link.id);
+      if (set.size === 0) this.linksByStar.delete(end); // 空の索引を残さない
+    }
     this.markDel(linkKey(link.id));
   }
 

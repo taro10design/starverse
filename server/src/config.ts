@@ -1,14 +1,18 @@
 // サーバーの調整値。負荷や荒らしの傾向を見て、ここだけ触れば済むようにしておく。
+// クライアントと同じ値を使うもの（1 人あたりの上限・色の数・uid の形式）は shared/limits.ts にある。
+
+import { MAX_LINKS_PER_USER, MAX_STARS_PER_USER } from "../../shared/limits";
 
 export const LIMITS = {
   // --- 世界の容量 ---
   maxStars: 500,
-  maxStarsPerUser: 64,
+  maxStarsPerUser: MAX_STARS_PER_USER, // 持ち主（= 1 接続）ごとに数える
   maxLinks: 600,
-  maxLinksPerUser: 96,
+  maxLinksPerUser: MAX_LINKS_PER_USER,
 
   // --- 部屋（空）のスケール ---
   roomCapacity: 300, // 1つの空に入れる人数。超えたら次の空へ振り分ける
+  maxConnsPerIp: 4, // 1つの空に同じ接続元から入れる数。超えたら断る（次の空には回さない）
   maxRooms: 8, // 振り分け先の空の数（space, space-2, ...）
 
   // --- 受信量の予算 ---
@@ -39,7 +43,8 @@ export const LIMITS = {
   // --- 入力の制限 ---
   maxMessageBytes: 512,
   coordMax: 10_000, // ワールド座標の絶対値の上限
-  maxColors: 16,
+  helloTimeoutMs: 10_000, // 接続してからこの時間内に hello が来なければ切断する
+  maxBacklogWhileIdentifying: 32, // hello のハッシュ計算中に届いたメッセージを貯めておく数
 } as const;
 
 // 接続ごとのレート制限（トークンバケット）。コストが大きい操作ほど重い
@@ -53,7 +58,7 @@ export const RATE = {
 
 export const COST = {
   p: 1,
-  pulse: 2,
+  pulse: 4, // 視界内の全員に配るので重め
   star: 2,
   unstar: 1, // 消す操作は軽い
   admire: 2,
