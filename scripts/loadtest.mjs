@@ -9,7 +9,6 @@ const URL_ = process.argv[2] ?? "ws://localhost:8787/ws";
 const N = Number(process.argv[3] ?? 200);
 const SECONDS = Number(process.argv[4] ?? 15);
 const SPREAD = 3; // 世界の広さ（1 = 1画面ぶん）。人は 0..SPREAD に散らばる
-const SEND_MS = 100;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stats = { bytes: 0, msgs: 0, open: 0, closed: 0, errors: 0 };
@@ -24,20 +23,29 @@ function makeClient(i, { probe = false } = {}) {
     me.y = 0.5;
   }
   const view = () => [me.x - 0.6, me.y - 0.6, me.x + 0.6, me.y + 0.6].map((v) => Math.round(v * 1000) / 1000);
+  // サーバーが指示する送信間隔（welcome / rate）に従う。実クライアントと同じ振る舞い
+  me.sendMs = 100;
+  const sendLoop = () => {
+    if (ws.readyState !== 1) return;
+    if (!probe) {
+      me.x += (Math.random() - 0.5) * 0.02;
+      me.y += (Math.random() - 0.5) * 0.02;
+    }
+    ws.send(JSON.stringify({ t: "p", x: me.x, y: me.y, c: i % 8, v: view() }));
+    me.timer = setTimeout(sendLoop, me.sendMs);
+  };
   ws.onopen = () => {
     stats.open++;
-    me.timer = setInterval(() => {
-      if (!probe) {
-        me.x += (Math.random() - 0.5) * 0.02;
-        me.y += (Math.random() - 0.5) * 0.02;
-      }
-      if (ws.readyState === 1) ws.send(JSON.stringify({ t: "p", x: me.x, y: me.y, c: i % 8, v: view() }));
-    }, SEND_MS);
+    me.timer = setTimeout(sendLoop, 0);
   };
   ws.onmessage = (e) => {
     const data = typeof e.data === "string" ? e.data : "";
     stats.msgs++;
     stats.bytes += data.length;
+    if (data.startsWith('{"t":"welcome"') || data.startsWith('{"t":"rate"')) {
+      const m = /"sendMs":(\d+)/.exec(data);
+      if (m) me.sendMs = Number(m[1]);
+    }
     if (probe && data.includes('"pulse"')) {
       const m = JSON.parse(data);
       const t0 = sentAt.get(Math.round(m.x * 1000));
@@ -46,7 +54,7 @@ function makeClient(i, { probe = false } = {}) {
   };
   ws.onclose = () => {
     stats.closed++;
-    clearInterval(me.timer);
+    clearTimeout(me.timer);
   };
   ws.onerror = () => stats.errors++;
   return me;
@@ -59,9 +67,11 @@ const clients = [];
 const observer = makeClient(0, { probe: true });
 const sender = makeClient(1, { probe: true });
 clients.push(observer, sender);
+const MAX_IN_FLIGHT = 30; // 接続処理中の数がこれを超えたら待つ（ローカルの接続待ちキューをあふれさせない）
 for (let i = 2; i < N; i++) {
+  const rampStart = performance.now();
+  while (clients.length - stats.open - stats.errors > MAX_IN_FLIGHT && performance.now() - rampStart < 10_000) await sleep(20);
   clients.push(makeClient(i));
-  if (i % 25 === 0) await sleep(50); // 接続を少しずつ立ち上げる
 }
 for (let w = 0; w < 100 && stats.open < N; w++) await sleep(200); // 全員の接続完了を待つ（最大20秒）
 await sleep(1000);
@@ -91,7 +101,7 @@ console.log(`loadgen loop lag  : p95=${(lag.percentile(95) / 1e6).toFixed(1)}ms 
 console.log(`probe latency ms    : p50=${pct(latencies, 0.5).toFixed(1)} p95=${pct(latencies, 0.95).toFixed(1)} max=${Math.max(...latencies, 0).toFixed(1)} (n=${latencies.length})`);
 
 for (const c of clients) {
-  clearInterval(c.timer);
+  clearTimeout(c.timer);
   c.ws.close();
 }
 await sleep(300);

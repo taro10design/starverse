@@ -4,13 +4,15 @@
 
 import type { ServerMessage, ServerMessageType } from "../../shared/protocol";
 import { PALETTES } from "./constants";
+import type { Network } from "./network";
 import type { Universe } from "./universe";
 
-type Handler<K extends ServerMessageType> = (m: Extract<ServerMessage, { t: K }>, u: Universe) => void;
+type Handler<K extends ServerMessageType> = (m: Extract<ServerMessage, { t: K }>, u: Universe, net: Network) => void;
 
 export const serverHandlers: { [K in ServerMessageType]: Handler<K> } = {
-  welcome(m, u) {
+  welcome(m, u, net) {
     u.myId = m.id;
+    net.setSendInterval(m.sendMs);
     for (const d of m.dots) u.peers.set(d.id, { x: d.x, y: d.y, rx: d.x, ry: d.y, c: d.c });
     for (const s of m.stars) {
       u.stars.set(s.id, s);
@@ -20,9 +22,15 @@ export const serverHandlers: { [K in ServerMessageType]: Handler<K> } = {
     u.pairsDirty = true;
   },
 
+  // 空の人数が変わったときの、位置を送る間隔の指示
+  rate(m, _u, net) {
+    net.setSendInterval(m.sendMs);
+  },
+
   // 他の人の位置（まとめて届く）
   ps(m, u) {
     for (const [id, x, y, c] of m.d) {
+      if (id === u.myId) continue; // 粗い一覧には自分も含まれる
       const p = u.peers.get(id);
       if (p) {
         p.x = x;
@@ -76,8 +84,8 @@ export const serverHandlers: { [K in ServerMessageType]: Handler<K> } = {
   },
 };
 
-export function handleServerMessage(m: ServerMessage, u: Universe) {
+export function handleServerMessage(m: ServerMessage, u: Universe, net: Network) {
   // 未知の種類（新しいサーバーと古いクライアントの組み合わせ）は無視する
-  const handler = serverHandlers[m.t] as ((m: ServerMessage, u: Universe) => void) | undefined;
-  handler?.(m, u);
+  const handler = serverHandlers[m.t] as ((m: ServerMessage, u: Universe, net: Network) => void) | undefined;
+  handler?.(m, u, net);
 }

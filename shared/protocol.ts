@@ -48,7 +48,9 @@ export type ClientMessage =
 
 // サーバー → クライアント
 export type ServerMessage =
-  | { t: "welcome"; id: string; dots: PeerDot[]; stars: StarData[]; links: LinkData[] }
+  | { t: "welcome"; id: string; sendMs: number; dots: PeerDot[]; stars: StarData[]; links: LinkData[] }
+  // 空の人数が変わったときの、位置を送る間隔の指示（人が増えるほど間隔を広げる）
+  | { t: "rate"; sendMs: number }
   | { t: "ps"; d: PresenceTuple[] }
   | { t: "pulse"; x: number; y: number; c: number }
   | ({ t: "star" } & StarData)

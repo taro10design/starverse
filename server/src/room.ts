@@ -2,7 +2,7 @@
 // 世界のルールは World、メッセージごとの処理は handlers.ts にあり、ここは入出力だけ。
 
 import type { LinkData, PeerDot, PresenceTuple, ServerMessage, StarData } from "../../shared/protocol";
-import { COST, LIMITS, RATE } from "./config";
+import { COST, LIMITS, RATE, sendMsFor } from "./config";
 import type { Env } from "./env";
 import { dispatch, type Conn, type RoomApi } from "./handlers";
 import { TokenBucket } from "./rate-limit";
@@ -20,17 +20,31 @@ interface Session {
 
 const round4 = (v: number) => Math.round(v * 10_000) / 10_000;
 
+// 位置の配信用グリッド。1 セル = ワールド座標 1（おおよそ 1 画面）
+const CELL = 1;
+const cellKey = (x: number, y: number) => Math.floor(x / CELL) * 1_000_000 + Math.floor(y / CELL);
+
+// 人数が増えるほど配信の間隔を広げる
+function tickMsFor(n: number): number {
+  for (const [upTo, ms] of LIMITS.tickMsByConnections) if (n <= upTo) return ms;
+  return LIMITS.tickMs;
+}
+
 export class Universe implements RoomApi, DurableObject {
   readonly world = new World();
   private conns = new Map<WebSocket, Conn>();
   private ticker: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
   private quietTicks = 0;
+  private tickMs: number = LIMITS.tickMs;
+  private sendMs: number = LIMITS.sendMsMin; // クライアントに指示している位置の送信間隔
 
   constructor(
     private ctx: DurableObjectState,
     _env: Env,
   ) {
+    // アプリ層の ping には、Durable Object を起こさずに pong を返す（死活監視用）
+    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.ctx.blockConcurrencyWhile(async () => {
       await this.migrateLegacy();
       const stars = await this.ctx.storage.list<StarData>({ prefix: "s:" });
@@ -43,7 +57,9 @@ export class Universe implements RoomApi, DurableObject {
 
   // --- 入口 ---
 
-  async fetch(): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/stats") return Response.json(this.stats());
+
     // 満員なら Worker に次の空を探させる
     if (this.conns.size >= LIMITS.roomCapacity) {
       return new Response("room full", { status: 503, headers: { "x-room-full": "1" } });
@@ -66,7 +82,8 @@ export class Universe implements RoomApi, DurableObject {
       dots.push({ id: o.id, x: round4(o.x), y: round4(o.y), c: o.c });
       if (dots.length >= LIMITS.maxWelcomePeers) break;
     }
-    this.send(conn, { t: "welcome", id, dots, stars: [...this.world.stars.values()], links: [...this.world.links.values()] });
+    this.updateRate();
+    this.send(conn, { t: "welcome", id, sendMs: this.sendMs, dots, stars: [...this.world.stars.values()], links: [...this.world.links.values()] });
     this.markDirty(conn); // 他の人に新しい光を知らせる
     await this.ensureAlarm();
 
@@ -85,7 +102,11 @@ export class Universe implements RoomApi, DurableObject {
       if (conn.bucket.consecutiveDrops > RATE.closeAfterDrops) ws.close(1008, "rate limit");
       return;
     }
-    dispatch(this, conn, msg);
+    try {
+      dispatch(this, conn, msg);
+    } catch (err) {
+      console.error("handler failed", msg.t, err); // 1 つの異常で部屋全体を落とさない
+    }
 
     // 位置は頻繁に変わるので、永続属性への書き込みは間引く
     if (msg.t === "p" && now - conn.attachedAt > 2000) {
@@ -104,8 +125,23 @@ export class Universe implements RoomApi, DurableObject {
 
   // 定期的な後片付け。接続が残っている間だけ繰り返す
   async alarm() {
-    this.prune(true);
+    try {
+      this.prune(true);
+    } catch (err) {
+      console.error("alarm failed", err);
+    }
     if (this.conns.size > 0) await this.ctx.storage.setAlarm(Date.now() + LIMITS.pruneIntervalMs);
+  }
+
+  // 観測用の数値（Worker の /stats がまとめて返す）
+  private stats() {
+    return {
+      connections: this.conns.size,
+      capacity: LIMITS.roomCapacity,
+      stars: this.world.stars.size,
+      links: this.world.links.size,
+      sendMs: this.sendMs, // クライアントに指示している位置の送信間隔
+    };
   }
 
   // --- RoomApi（handlers から使われる） ---
@@ -130,7 +166,7 @@ export class Universe implements RoomApi, DurableObject {
   markDirty(conn: Conn) {
     conn.dirty = true;
     this.quietTicks = 0;
-    if (!this.ticker) this.ticker = setInterval(() => this.tick(), LIMITS.tickMs);
+    this.ensureTicker();
   }
 
   // 前回から変わった分だけを書く。変更が無ければ何もしない
@@ -156,14 +192,25 @@ export class Universe implements RoomApi, DurableObject {
 
   // --- 位置のまとめ配信 ---
 
-  // 位置は「動いた人」を視界内の相手にだけ、tickMs ごとに1通へまとめて送る。
+  // 位置は「動いた人」を視界内の相手にだけ、一定間隔で 1 通へまとめて送る。
   // 一定間隔で、視界外も含めた粗い一覧も送る（ミニマップ用）。
   // 誰も動かない間はタイマーを止めて、Durable Object がハイバネートできるようにする。
   private tick() {
+    try {
+      this.tickOnce();
+    } catch (err) {
+      console.error("tick failed", err);
+    }
+  }
+
+  private tickOnce() {
     this.tickCount++;
     const coarse = this.tickCount % LIMITS.coarseEveryTicks === 0;
     const all = [...this.conns.values()];
     const moved = all.filter((c) => c.dirty);
+
+    // 人数が増えたらタイマーの間隔を広げる（1 回の処理が間に合わなくなるのを防ぐ）
+    if (this.tickMs !== tickMsFor(all.length)) this.restartTicker();
 
     if (!moved.length && !coarse) {
       if (++this.quietTicks > LIMITS.idleTicksBeforeSleep) this.stopTicker();
@@ -171,26 +218,79 @@ export class Universe implements RoomApi, DurableObject {
     }
 
     const max = LIMITS.maxPeersPerMessage;
-    // 粗い一覧は人数が多いとき、回ごとに窓をずらして全員が順に載るようにする
-    const offset = coarse ? ((this.tickCount / LIMITS.coarseEveryTicks) * max) % Math.max(1, all.length) : 0;
-
-    for (const me of all) {
-      const out: PresenceTuple[] = [];
-      if (coarse) {
-        for (let k = 0; k < all.length && out.length < max; k++) {
-          const o = all[(offset + k) % all.length];
-          if (o !== me) out.push([o.id, round4(o.x), round4(o.y), o.c]);
-        }
-      } else {
-        for (const o of moved) {
-          if (o === me || !inView(me.view, o.x, o.y, LIMITS.viewMargin)) continue;
-          out.push([o.id, round4(o.x), round4(o.y), o.c]);
-          if (out.length >= max) break;
-        }
+    if (coarse) {
+      // 粗い一覧は全員に同じ内容なので 1 回だけ作る。受け取った側は自分の id を無視する。
+      // 人数が多いときは、回ごとに窓をずらして全員が順に載るようにする
+      const offset = ((this.tickCount / LIMITS.coarseEveryTicks) * max) % Math.max(1, all.length);
+      const d: PresenceTuple[] = [];
+      for (let k = 0; k < all.length && d.length < max; k++) {
+        const o = all[(offset + k) % all.length];
+        d.push([o.id, round4(o.x), round4(o.y), o.c]);
       }
-      if (out.length) this.send(me, { t: "ps", d: out });
+      const out = JSON.stringify({ t: "ps", d } satisfies ServerMessage);
+      for (const me of all) this.sendRaw(me, out);
+    } else {
+      // 動いた人をグリッドに入れて、各受信者は視界に重なるセルだけを見る
+      const grid = new Map<number, { c: Conn; tuple: PresenceTuple }[]>();
+      for (const o of moved) {
+        const key = cellKey(o.x, o.y);
+        const entry = { c: o, tuple: [o.id, round4(o.x), round4(o.y), o.c] as PresenceTuple };
+        const bucket = grid.get(key);
+        if (bucket) bucket.push(entry);
+        else grid.set(key, [entry]);
+      }
+      const entries = [...grid.values()].flat();
+
+      for (const me of all) {
+        const d: PresenceTuple[] = [];
+        for (const e of this.candidates(me, grid, entries)) {
+          if (e.c === me || !inView(me.view, e.c.x, e.c.y, LIMITS.viewMargin)) continue;
+          d.push(e.tuple);
+          if (d.length >= max) break;
+        }
+        if (d.length) this.send(me, { t: "ps", d });
+      }
     }
     for (const c of moved) c.dirty = false;
+  }
+
+  // 受信者の視界に重なるセルにいる人だけを返す。視界が広すぎるときは全員を調べるほうが速い
+  private candidates<T extends { c: Conn }>(me: Conn, grid: Map<number, T[]>, all: T[]): T[] {
+    const v = me.view;
+    if (!v) return all;
+    const mx = (v[2] - v[0]) * LIMITS.viewMargin;
+    const my = (v[3] - v[1]) * LIMITS.viewMargin;
+    const cx0 = Math.floor((v[0] - mx) / CELL), cx1 = Math.floor((v[2] + mx) / CELL);
+    const cy0 = Math.floor((v[1] - my) / CELL), cy1 = Math.floor((v[3] + my) / CELL);
+    if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > grid.size) return all;
+    const out: T[] = [];
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const bucket = grid.get(cx * 1_000_000 + cy);
+        if (bucket) out.push(...bucket);
+      }
+    }
+    return out;
+  }
+
+  private ensureTicker() {
+    if (this.ticker) return;
+    this.tickMs = tickMsFor(this.conns.size);
+    this.ticker = setInterval(() => this.tick(), this.tickMs);
+  }
+
+  private restartTicker() {
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = null;
+    this.ensureTicker();
+  }
+
+  // 人数に応じた送信間隔が変わったら、全員に知らせる
+  private updateRate() {
+    const next = sendMsFor(this.conns.size);
+    if (next === this.sendMs) return;
+    this.sendMs = next;
+    this.broadcast({ t: "rate", sendMs: next });
   }
 
   private stopTicker() {
@@ -221,6 +321,7 @@ export class Universe implements RoomApi, DurableObject {
     if (!conn) return;
     this.conns.delete(ws);
     this.broadcast({ t: "leave", id: conn.id });
+    this.updateRate();
     if (this.conns.size === 0) this.stopTicker();
   }
 
