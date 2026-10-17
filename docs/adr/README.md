@@ -26,3 +26,4 @@
 | [0005](0005-world-as-pure-class.md) | 世界のルールを純粋なクラスに分ける | 採用 |
 | [0006](0006-no-backward-compatibility.md) | 後方互換性は取らない | 採用 |
 | [0007](0007-private-uid-and-hello-handshake.md) | 持ち主の鍵 uid は秘密にし、hello ハンドシェイクで持ち主 ID を作る | 採用 |
+| [0008](0008-cost-aware-message-budget.md) | メッセージ量をコストの面でも設計する | 採用 |
