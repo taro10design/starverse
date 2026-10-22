@@ -204,7 +204,9 @@ export class Input {
     if (!this.gestureCancelled && this.current.move(p, pt !== undefined)) return;
     if (this.pointers.size <= 1) {
       player.target = { x: p.wx, y: p.wy };
-      camera.free = false;
+      // マウスのカーソルは画面の外へ出ないので、追従しなくても光は見えている。
+      // 追従すると、カーソルを画面端に置くだけで視点が流れ続ける（視点はホイール・ドラッグ・キーで動かす）
+      camera.free = e.pointerType === "mouse";
     }
   }
 
