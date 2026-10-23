@@ -162,7 +162,7 @@ function setup() {
     universe,
     history,
     network: { send: vi.fn() },
-    ui: { ping: vi.fn(), haptic: vi.fn(), selectTool: vi.fn() },
+    ui: { ping: vi.fn(), haptic: vi.fn(), selectTool: vi.fn(), onboarding: { released: vi.fn() } },
     focusLight: vi.fn(),
     canEdit: () => true,
     undo: vi.fn(),
@@ -170,12 +170,46 @@ function setup() {
   };
   // Input は App のうち使う部分しか触らない。型だけ App として渡す
   const input = new mod.Input(app as unknown as App);
-  const pe = (pointerId: number, x: number, y: number, button = 0) =>
-    ({ pointerId, clientX: x, clientY: y, button, target: canvas }) as unknown as PointerEvent;
+  const pe = (pointerId: number, x: number, y: number, button = 0, pointerType = "touch") =>
+    ({ pointerId, clientX: x, clientY: y, button, pointerType, target: canvas }) as unknown as PointerEvent;
   return { input, app, canvas, universe, history, pe };
 }
 
+// 光を目標まで動かし終えたことにする
+const arrive = (player: InstanceType<typeof mod.Player>) => {
+  if (!player.target) throw new Error("目標がない");
+  player.x = player.target.x;
+  player.y = player.target.y;
+};
+
 describe("Input（ポインタ）", () => {
+  it("マウスでは、カーソルが画面端にあっても視点は動かない（光がカーソルに着いても）", () => {
+    const { input, app, pe } = setup();
+    for (const [x, y] of [
+      [995, 350],
+      [5, 350],
+      [500, 3],
+      [500, 697],
+    ]) {
+      const { camera, player } = app;
+      const [cx, cy] = [camera.cx, camera.cy];
+      input.handlePointerMove(pe(1, x, y, 0, "mouse"));
+      arrive(player); // 光がカーソルに着いた
+      camera.follow(player);
+      expect([camera.cx, camera.cy]).toEqual([cx, cy]);
+    }
+  });
+
+  it("タッチでは、光が画面端に近づくと視点が寄り添う", () => {
+    const { input, app, pe } = setup();
+    const { camera, player } = app;
+    input.handlePointerDown(pe(1, 500, 350));
+    input.handlePointerMove(pe(1, 995, 350));
+    arrive(player);
+    camera.follow(player);
+    expect(camera.cx).toBeGreaterThan(0.5);
+  });
+
   it("キャンバス上のポインタは全て setPointerCapture する", () => {
     const { input, canvas, pe } = setup();
     input.handlePointerDown(pe(1, 100, 100));
@@ -204,6 +238,24 @@ describe("Input（ポインタ）", () => {
     input.handlePointerUp(pe(3, 500, 500));
     expect(up).toHaveBeenCalledTimes(1);
     expect(universe.stars.size).toBe(1);
+  });
+
+  it("キャンバスで離したら、今のツールとタップかどうかを案内（Onboarding）に知らせる。ピンチの指では知らせない", () => {
+    const { input, app, pe } = setup();
+    input.handlePointerDown(pe(1, 100, 100));
+    input.handlePointerUp(pe(1, 100, 100));
+    expect(app.ui.onboarding.released).toHaveBeenLastCalledWith("move", true);
+    input.setTool("star");
+    input.handlePointerDown(pe(2, 100, 100));
+    input.handlePointerMove(pe(2, 200, 100));
+    input.handlePointerUp(pe(2, 200, 100));
+    expect(app.ui.onboarding.released).toHaveBeenLastCalledWith("star", false);
+    // ピンチ（2 本指）では知らせない
+    input.handlePointerDown(pe(3, 100, 100));
+    input.handlePointerDown(pe(4, 300, 100));
+    input.handlePointerUp(pe(4, 300, 100));
+    input.handlePointerUp(pe(3, 100, 100));
+    expect(app.ui.onboarding.released).toHaveBeenCalledTimes(2);
   });
 
   it("lostpointercapture で指を片付けてツールを cancel する（次のクリックがピンチ扱いにならない）", () => {

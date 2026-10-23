@@ -19,8 +19,10 @@ client/    ブラウザ側（Vite + TypeScript + Canvas 2D）
   src/       app / camera / player / universe / network / renderer / ui / history / input / keys
              tools/            ツールごとの操作（Strategy）。Input は振り分けだけ
              message-handlers  サーバーからのメッセージごとの処理（型で網羅を強制）
+             onboarding        初めての人への 1 行の案内（純粋な状態。表示は ui）
+             demo / demo-view  ヘルプと案内の見本の動き（フレームは純粋な関数、描画は別）
              storage / util / constants / env
-  tests/     Camera・History・入力・Network（PartySocket の設定）・メッセージ処理・検証・ツールの単体テスト
+  tests/     Camera・History・入力・Network（PartySocket の設定）・メッセージ処理・検証・ツール・案内・見本の動きの単体テスト
   public/    OGP 画像、_headers（セキュリティヘッダ・キャッシュ）、THIRD_PARTY_NOTICES.txt（生成物）
 server/    Cloudflare Workers 側
   src/       index.ts（入口・空の振り分け・/stats）/ room.ts（Durable Object。PartyServer の Server）
